@@ -1,0 +1,2 @@
+# No third-party dependencies. The service uses only the Python standard
+# library (http.server, sqlite3, struct, gzip, zlib). Python >= 3.10.
