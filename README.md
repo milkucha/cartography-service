@@ -64,4 +64,4 @@ service.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+CC BY-NC 4.0 — see [LICENSE](./LICENSE).
