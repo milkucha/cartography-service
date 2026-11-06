@@ -155,8 +155,11 @@ def build_chunk_root(
     surface_fn=None,
     water_level_fn=None,
     biome: str = "minecraft:plains",
+    status: str | None = "minecraft:full",
 ) -> bytes:
     """Encode one chunk as a root NBT compound.
+
+    ``status`` is written as the NBT ``Status`` tag (``None`` omits it).
 
     ``ground_fn(x, z)`` returns the solid ground height (or None for an empty
     column), ``surface_fn(x, z)`` the surface block name, and
@@ -202,13 +205,17 @@ def build_chunk_root(
         [
             tag_int("xPos", cx),
             tag_int("zPos", cz),
+            *([tag_string("Status", status)] if status else []),
             tag_list("sections", TAG_COMPOUND, sections),
         ],
     )
 
 
-def write_region(path, chunks: dict[tuple[int, int], bytes]) -> Path:
-    """Write chunks keyed by local (x, z) into one .mca region file."""
+def write_region(path, chunks: dict[tuple[int, int], bytes], timestamps=None) -> Path:
+    """Write chunks keyed by local (x, z) into one .mca region file.
+
+    ``timestamps`` optionally maps local (x, z) to the header save time.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -225,6 +232,9 @@ def write_region(path, chunks: dict[tuple[int, int], bytes]) -> Path:
         index = (local_x % 32) + (local_z % 32) * 32
         header[index * 4:index * 4 + 3] = next_sector.to_bytes(3, "big")
         header[index * 4 + 3] = sectors
+        stamp = (timestamps or {}).get((local_x, local_z))
+        if stamp is not None:
+            header[4096 + index * 4:4096 + index * 4 + 4] = int(stamp).to_bytes(4, "big")
 
         body.extend(padded)
         next_sector += sectors
@@ -312,8 +322,25 @@ class FakeLoader:
     region_dir = "fake"
     region_count = 0
 
-    def __init__(self, records=None):
+    def __init__(self, records=None, timestamps=None, world_id=None):
         self.records = records or {}
+        # Optional: only loaders given ``timestamps`` expose chunk_timestamp.
+        self.timestamps = timestamps
+        self._world_id = world_id
+        if timestamps is None:
+            self.chunk_timestamp = None  # type: ignore[assignment]
+        if world_id is None:
+            self.world_id = None  # type: ignore[assignment]
 
     def load_chunk(self, cx, cz):
-        return self.records.get((cx, cz))
+        record = self.records.get((cx, cz))
+        if record is not None and self.timestamps is not None:
+            record = dict(record)
+            record["save_ts"] = self.timestamps.get((cx, cz))
+        return record
+
+    def chunk_timestamp(self, cx, cz):
+        return self.timestamps.get((cx, cz))
+
+    def world_id(self):
+        return self._world_id

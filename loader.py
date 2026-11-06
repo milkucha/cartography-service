@@ -15,6 +15,7 @@ at startup (slow, mostly useful for small test worlds).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -75,6 +76,11 @@ for _flower in (
     "rose_bush", "peony", "pink_petals", "spore_blossom",
 ):
     NON_SOLID_BLOCKS.add(f"minecraft:{_flower}")
+
+
+def is_full_status(status) -> bool:
+    """True for a fully generated chunk (``Status`` == ``minecraft:full``)."""
+    return isinstance(status, str) and status in ("minecraft:full", "full")
 
 
 def resolve_region_dir(world_path: str | Path) -> Path | None:
@@ -221,11 +227,20 @@ class ChunkLoader:
             return None
         try:
             with self._io_lock:
+                # The server rewrites the header when it saves; a cached
+                # handle would otherwise point at stale sectors.
+                handle.refresh_header()
                 root = handle.read_chunk_nbt(cx % 32, cz % 32)
+                save_ts = handle.timestamp(cx % 32, cz % 32)
         except Exception as exc:
             log.warning("Failed to read chunk (%s, %s): %s", cx, cz, exc)
             return None
         if not root:
+            return None
+        # Proto-chunks (structure_starts, biomes, carvers, ...) have partial or
+        # empty block data. Treat them as missing so they are retried on every
+        # request and never cached.
+        if not is_full_status(root.get("Status")):
             return None
 
         try:
@@ -240,7 +255,54 @@ class ChunkLoader:
             log.warning("Failed to analyze composition for chunk (%s, %s): %s", cx, cz, exc)
             stats = {}
 
-        return build_chunk_record(cx, cz, surface, stats, source="base")
+        record = build_chunk_record(cx, cz, surface, stats, source="base")
+        record["save_ts"] = int(save_ts) if save_ts else None
+        return record
+
+    def chunk_timestamp(self, cx: int, cz: int):
+        """Region-header save time of a chunk (unix seconds) or None if absent.
+
+        Read fresh from disk on every call so a live world's later saves are
+        noticed. Does not check chunk Status (cheap header-only read).
+        """
+        if not self.available:
+            return None
+        self.index_regions()
+        handle = self._region_for(cx, cz)
+        if handle is None:
+            return None
+        try:
+            with self._io_lock:
+                offset, stamp = handle.read_header_entry(cx % 32, cz % 32)
+                return (stamp or None) if offset else None
+        except Exception as exc:
+            log.warning("Failed to read timestamp for chunk (%s, %s): %s", cx, cz, exc)
+            return None
+
+    def world_id(self) -> str | None:
+        """Stable identifier of the save the rows came from.
+
+        Combines the resolved region dir with the level.dat seed when it can be
+        read cheaply, else just the path. None when there is no save.
+        """
+        if not self.available:
+            return None
+        base = str(Path(self.region_dir).resolve())
+        seed = None
+        try:
+            level = Path(self.region_dir).parent / "level.dat"
+            if level.is_file():
+                import gzip
+                import mc_nbt
+
+                _, root = mc_nbt.parse(gzip.decompress(level.read_bytes()))
+                data = (root or {}).get("Data") or {}
+                gen = data.get("WorldGenSettings") or {}
+                seed = gen.get("seed", data.get("RandomSeed"))
+        except Exception:
+            seed = None
+        raw = f"{base}|{seed}"
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
     def iter_all_chunks(self):
         """Yield every chunk present in the indexed region files."""
@@ -390,6 +452,7 @@ def build_chunk_record(cx, cz, surface, stats, source="base"):
             "top_blocks": stats.get("top_blocks") or [],
             "strong_indicators": stats.get("strong_indicator_types") or [],
             "strong_indicator_count": stats.get("strong_indicator_count", 0),
+            "strong_counts": dict(stats.get("strong_indicator_counts") or {}),
             "dominant_biome": stats.get("dominant_biome"),
             "artificiality_score": stats.get("artificiality_score", 0.0),
             "surface_min_y": stats.get("surface_min_y"),

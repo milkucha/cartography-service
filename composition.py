@@ -156,6 +156,7 @@ def analyze_chunk(chunk_root, cx, cz):
         "distinct_engineered_types": distinct_engineered_types,
         "strong_indicator_count": sum(strong_indicators.values()),
         "strong_indicator_types": list(strong_indicators.keys()),
+        "strong_indicator_counts": dict(strong_indicators),
         "decay_indicator_count": sum(decay_indicators.values()),
         "decay_indicator_types": list(decay_indicators.keys()),
         "uniform_volume": dict(uniform_volume),

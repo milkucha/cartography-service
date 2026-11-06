@@ -7,6 +7,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import map_store
 import perception
 import prefetch
 import topography
@@ -68,6 +69,9 @@ class TopographyAPI:
                 try:
                     if parsed.path in ("/", "/health"):
                         return self._health()
+                    dimension = (params.get("dimension") or [None])[0]
+                    if not map_store.is_overworld(dimension):
+                        return self._unavailable_dimension(dimension)
                     if parsed.path == "/perception":
                         return self._perception(params)
                     if parsed.path == "/topography":
@@ -89,7 +93,7 @@ class TopographyAPI:
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path not in ("/diff", "/position"):
+                if parsed.path not in ("/diff", "/position", "/chunk_snapshot"):
                     return self._error(404, f"Unknown endpoint {parsed.path}")
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -106,6 +110,8 @@ class TopographyAPI:
                     return self._error(400, f"Invalid JSON: {exc}")
                 if parsed.path == "/position":
                     return self._position(payload)
+                if parsed.path == "/chunk_snapshot":
+                    return self._chunk_snapshot(payload)
                 return self._diff(payload)
 
             # ------------------------------------------------------- endpoints
@@ -182,9 +188,48 @@ class TopographyAPI:
                     return self._error(404, f"No chunk at ({cx}, {cz})")
                 self._send(200, data)
 
+            def _unavailable_dimension(self, dimension):
+                self._send(
+                    200,
+                    {
+                        "service": "topography",
+                        "unavailable": "dimension",
+                        "dimension": map_store.normalize_dimension(dimension),
+                    },
+                )
+
+            def _chunk_snapshot(self, payload):
+                """POST /chunk_snapshot: replace whole-chunk surfaces (idempotent)."""
+                if isinstance(payload, dict):
+                    snaps = payload.get("snapshots")
+                    default_dim = payload.get("dimension")
+                else:
+                    snaps, default_dim = payload, None
+                if not isinstance(snaps, list):
+                    return self._error(400, "Expected {\"snapshots\": [...]}")
+                prepared = []
+                for snap in snaps:
+                    if isinstance(snap, dict) and "dimension" not in snap and default_dim:
+                        snap = dict(snap, dimension=default_dim)
+                    prepared.append(snap)
+                accepted, rejected, ignored = store.apply_snapshots(prepared)
+                self._send(
+                    200,
+                    {"accepted": accepted, "rejected": rejected, "ignored": ignored},
+                )
+
             def _position(self, payload):
                 if not isinstance(payload, dict):
                     return self._error(400, "Expected a JSON object")
+                if not map_store.is_overworld(payload.get("dimension")):
+                    return self._send(
+                        200,
+                        {
+                            "accepted": False,
+                            "unavailable": "dimension",
+                            "dimension": map_store.normalize_dimension(payload.get("dimension")),
+                        },
+                    )
                 try:
                     x = int(payload["x"])
                     z = int(payload["z"])
@@ -210,6 +255,7 @@ class TopographyAPI:
                 self._send(200, {"accepted": True, "queued": queued})
 
             def _diff(self, payload):
+                default_dim = payload.get("dimension") if isinstance(payload, dict) else None
                 if isinstance(payload, dict) and "deltas" in payload:
                     deltas = payload["deltas"]
                 elif isinstance(payload, dict):
@@ -221,12 +267,21 @@ class TopographyAPI:
 
                 accepted = 0
                 rejected = 0
+                ignored = 0
                 for delta in deltas:
+                    if isinstance(delta, dict):
+                        dim = delta.get("dimension", default_dim)
+                        if not map_store.is_overworld(dim):
+                            ignored += 1
+                            continue
                     if isinstance(delta, dict) and store.apply_diff(delta):
                         accepted += 1
                     else:
                         rejected += 1
-                self._send(200, {"accepted": accepted, "rejected": rejected})
+                result = {"accepted": accepted, "rejected": rejected}
+                if ignored:
+                    result["ignored"] = ignored
+                self._send(200, result)
 
         return Handler
 

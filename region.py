@@ -25,12 +25,10 @@ COMPRESSION_NONE = 3
 class RegionFile:
     def __init__(self, path):
         self.path = Path(path)
-        self._file = open(self.path, "rb")
-        self._locations = self._file.read(HEADER_SIZE)
-        if len(self._locations) < HEADER_SIZE:
-            # Empty/placeholder region files (0 bytes is common) have no
-            # header at all; treat every chunk in them as absent.
-            self._locations += b"\x00" * (HEADER_SIZE - len(self._locations))
+        self._file = open(self.path, "rb", buffering=0)  # unbuffered: live server rewrites headers
+        # Empty/placeholder region files (0 bytes is common) have no header at
+        # all; refresh_header pads with zeros so every chunk reads as absent.
+        self.refresh_header()
 
     def __enter__(self):
         return self
@@ -40,6 +38,30 @@ class RegionFile:
 
     def close(self):
         self._file.close()
+
+    def refresh_header(self):
+        """Re-read the location + timestamp tables (a live server rewrites them)."""
+        self._file.seek(0)
+        header = self._file.read(HEADER_SIZE + SECTOR_SIZE)
+        header += b"\x00" * (HEADER_SIZE + SECTOR_SIZE - len(header))
+        self._locations = header[:HEADER_SIZE]
+        self._timestamps = header[HEADER_SIZE:]
+
+    def read_header_entry(self, local_x: int, local_z: int):
+        """Fresh ``(offset_sectors, timestamp)`` for one chunk (8 bytes of I/O)."""
+        idx = (local_x % 32) + (local_z % 32) * 32
+        self._file.seek(idx * 4)
+        loc = self._file.read(4)
+        self._file.seek(SECTOR_SIZE + idx * 4)
+        stamp = self._file.read(4)
+        loc = loc.ljust(4, bytes(1))
+        stamp = stamp.ljust(4, bytes(1))
+        return int.from_bytes(loc[0:3], "big"), int.from_bytes(stamp, "big")
+
+    def timestamp(self, local_x: int, local_z: int) -> int:
+        """Last-save time (unix seconds) of a chunk from the second header table."""
+        idx = (local_x % 32) + (local_z % 32) * 32
+        return int.from_bytes(self._timestamps[idx * 4:idx * 4 + 4], "big")
 
     def _location(self, local_x: int, local_z: int):
         idx = (local_x % 32) + (local_z % 32) * 32
