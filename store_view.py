@@ -42,17 +42,16 @@ class StoreView:
         return self.get_chunk(int(x) // 16, int(z) // 16)
 
     def touch_window(self, center_cx, center_cz, size_chunks):
-        records, missing = self._store.touch_window(center_cx, center_cz, size_chunks)
+        size = int(size_chunks)
+        half = size // 2
+        cx1, cz1 = int(center_cx) - half, int(center_cz) - half
         seen = self._seen()
-        kept = []
-        for rec in records:
-            key = (rec["cx"], rec["cz"])
-            if key in seen:
-                kept.append(rec)
-            else:
-                self.unexplored.add(key)
-                missing += 1
-        return kept, missing
+        window = [(cx, cz) for cz in range(cz1, cz1 + size) for cx in range(cx1, cx1 + size)]
+        unseen = {k for k in window if k not in seen}
+        self.unexplored |= unseen
+        records, missing = self._store.touch_window(center_cx, center_cz, size_chunks)
+        kept = [r for r in records if (r["cx"], r["cz"]) in seen]
+        return kept, size * size - len(kept)
 
     def get_window(self, center_cx, center_cz, radius_chunks):
         records, missing = [], 0

@@ -358,3 +358,68 @@ class FakeLoader:
 
     def world_id(self):
         return self._world_id
+
+
+# ------------------------------------------------- structure (settlement) fixtures
+FLAT_GROUND = 20
+PLANKS = "minecraft:oak_planks"
+STAIRS = "minecraft:oak_stairs"
+COBBLE = "minecraft:cobblestone"
+PATH = "minecraft:dirt_path"
+
+
+def house_extras(x0, z0, w, d, h=3, ground=FLAT_GROUND, door=True, extras=None, wall=PLANKS, roof=STAIRS):
+    """Return ``{(x, z): {y: block}}`` for a walled house with a flat stair roof."""
+    out = {}
+    for x in range(x0, x0 + w):
+        for z in range(z0, z0 + d):
+            col = {}
+            edge = x in (x0, x0 + w - 1) or z in (z0, z0 + d - 1)
+            if edge:
+                for y in range(ground + 1, ground + h + 1):
+                    col[y] = wall
+            col[ground + h + 1] = roof
+            out[(x, z)] = col
+    if door:
+        out[(x0 + w // 2, z0)].update({ground + 1: "minecraft:oak_door", ground + 2: "minecraft:oak_door"})
+        out[(x0, z0 + d // 2)][ground + 2] = "minecraft:glass_pane"
+    for (ex, ez), blocks in (extras or {}).items():
+        out[(ex, ez)].update(blocks)
+    return out
+
+
+def tree_extras(x, z, ground=FLAT_GROUND):
+    out = {(x, z): {y: LOG for y in range(ground + 1, ground + 6)}}
+    for dx in range(-2, 3):
+        for dz in range(-2, 3):
+            col = out.setdefault((x + dx, z + dz), {})
+            for y in (ground + 4, ground + 5):
+                col.setdefault(y, LEAVES)
+    for dx in range(-1, 2):
+        for dz in range(-1, 2):
+            out[(x + dx, z + dz)].setdefault(ground + 6, LEAVES)
+    return out
+
+
+def build_structure_world(root, chunk_boxes, extras, ground=FLAT_GROUND, surface=None, water=None):
+    """Flat world (single region r.0.0) with the given per-column ``extras``.
+
+    ``chunk_boxes`` is a list of (cx1, cz1, cx2, cz2); ``extras`` maps (x, z) to
+    ``{y: block}``; ``surface``/``water`` map (x, z) to a surface block / water level.
+    """
+    surface = surface or {}
+    water = water or {}
+    region = Path(root) / "world" / "region"
+    chunks = {}
+    for (cx1, cz1, cx2, cz2) in chunk_boxes:
+        for cx in range(cx1, cx2 + 1):
+            for cz in range(cz1, cz2 + 1):
+                chunks[(cx, cz)] = build_chunk_root(
+                    cx, cz,
+                    lambda x, z: ground - 2 if (x, z) in water else ground,
+                    lambda x, z: surface.get((x, z), GRASS),
+                    lambda x, z: water.get((x, z)),
+                    extras_fn=lambda x, z: extras.get((x, z)),
+                )
+    write_region(region / "r.0.0.mca", chunks)
+    return Path(root) / "world"

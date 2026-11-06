@@ -233,9 +233,18 @@ def _find_bridges(records, feats, mask_cols):
         rec = records.get((x >> 4, z >> 4))
         return bool(rec and rec["surface"]["water"][(x & 15) + (z & 15) * 16])
 
+    def side(x, z, dx, dz):
+        # first non-built column within 3 blocks must be water (bridges are <= 5 wide)
+        for k in range(1, 4):
+            q = (x + dx * k, z + dz * k)
+            if q in cand:
+                continue
+            return is_water(*q)
+        return False
+
     over = {p: y for p, y in cand.items()
-            if (is_water(p[0] - 1, p[1]) and is_water(p[0] + 1, p[1]))
-            or (is_water(p[0], p[1] - 1) and is_water(p[0], p[1] + 1))}
+            if (side(p[0], p[1], -1, 0) and side(p[0], p[1], 1, 0))
+            or (side(p[0], p[1], 0, -1) and side(p[0], p[1], 0, 1))}
     bridges = []
     for comp in settlements._components(over, 1):
         xs = [p[0] for p in comp]
@@ -399,7 +408,8 @@ def _summary(n, roles, buildings, dims, tallest, read_ok):
         parts.append("+".join(light))
     paths = [_label(k) for k, _ in roles["paths"].most_common(1)]
     if paths:
-        parts.append(f"{paths[0]} paths")
+        label = paths[0][:-5] if paths[0].endswith(" path") else paths[0]
+        parts.append(f"{label} paths")
     if tallest:
         t = tallest["tallest"]
         tag = "tower" if tallest["footprint_area"] <= 80 and tallest["height"] >= 10 else "building"
