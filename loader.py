@@ -25,6 +25,7 @@ import composition
 import mc_blocks
 import palette
 import region
+import terrain_rules
 
 log = logging.getLogger("topography.loader")
 
@@ -274,6 +275,8 @@ def _empty_surface():
         "ground_y": [None] * 256,
         "ground_materials": [None] * 256,
         "water": [False] * 256,
+        "terrain_y": [None] * 256,
+        "terrain_materials": [None] * 256,
     }
 
 
@@ -291,13 +294,20 @@ def _section_names(section):
 
 
 def decode_surface(root):
-    """Return per-column surface/ground data for a chunk root compound."""
+    """Return per-column surface/ground/terrain data for a chunk root compound.
+
+    ``terrain_y`` / ``terrain_materials`` follow ``terrain_rules.is_ground``:
+    the topmost block that is not air, liquid, vegetation or leaves (so
+    canopies are skipped, and under water the bed is reported).
+    """
     sections = root.get("sections") or []
     result = _empty_surface()
     surface_y = result["y"]
     surface_mat = result["materials"]
     ground_y = result["ground_y"]
     ground_mat = result["ground_materials"]
+    terrain_y = result["terrain_y"]
+    terrain_mat = result["terrain_materials"]
     water = result["water"]
 
     ordered = sorted(
@@ -306,10 +316,12 @@ def decode_surface(root):
         reverse=True,
     )
 
-    surface_remaining = 256
-    ground_remaining = 256
+    # Columns still missing a value for each of the three trackers.
+    pend_surface = set(range(256))
+    pend_ground = set(range(256))
+    pend_terrain = set(range(256))
     for section in ordered:
-        if surface_remaining == 0 and ground_remaining == 0:
+        if not (pend_surface or pend_ground or pend_terrain):
             break
         names, _ = _section_names(section)
         if not names:
@@ -320,20 +332,23 @@ def decode_surface(root):
 
         if len(names) == 1:
             name = names[0]
-            if name is None:
+            if name is None or name in AIR_BLOCKS:
                 continue
-            is_air = name in AIR_BLOCKS
-            is_solid = not is_air and name not in NON_SOLID_BLOCKS
             top_y = base_y + 15
-            for index in range(256):
-                if not is_air and surface_y[index] is None:
-                    surface_y[index] = top_y
-                    surface_mat[index] = name
-                    surface_remaining -= 1
-                if is_solid and ground_y[index] is None:
+            for index in pend_surface:
+                surface_y[index] = top_y
+                surface_mat[index] = name
+            pend_surface = set()
+            if name not in NON_SOLID_BLOCKS:
+                for index in pend_ground:
                     ground_y[index] = top_y
                     ground_mat[index] = name
-                    ground_remaining -= 1
+                pend_ground = set()
+            if terrain_rules.is_ground(name):
+                for index in pend_terrain:
+                    terrain_y[index] = top_y
+                    terrain_mat[index] = name
+                pend_terrain = set()
             continue
 
         block_states = section.get("block_states")
@@ -345,24 +360,38 @@ def decode_surface(root):
         if len(indices) < 4096:
             continue
 
+        # Per palette entry: (is_air, counts_as_ground, is_terrain)
+        flags = [
+            (
+                n is None or n in AIR_BLOCKS,
+                n is not None and n not in NON_SOLID_BLOCKS,
+                terrain_rules.is_ground(n),
+            )
+            for n in names
+        ]
         for ly in range(15, -1, -1):
-            if ground_remaining == 0 and surface_remaining == 0:
+            if not (pend_surface or pend_ground or pend_terrain):
                 break
             row = ly * 256
-            for index in range(256):
-                if surface_y[index] is not None and ground_y[index] is not None:
+            y = base_y + ly
+            for index in sorted(pend_surface | pend_ground | pend_terrain):
+                pal_index = indices[row + index]
+                is_air, is_solid, is_terrain = flags[pal_index]
+                if is_air:
                     continue
-                name = names[indices[row + index]]
-                if name in AIR_BLOCKS:
-                    continue
-                if surface_y[index] is None:
-                    surface_y[index] = base_y + ly
+                name = names[pal_index]
+                if index in pend_surface:
+                    surface_y[index] = y
                     surface_mat[index] = name
-                    surface_remaining -= 1
-                if ground_y[index] is None and name not in NON_SOLID_BLOCKS:
-                    ground_y[index] = base_y + ly
+                    pend_surface.discard(index)
+                if is_solid and index in pend_ground:
+                    ground_y[index] = y
                     ground_mat[index] = name
-                    ground_remaining -= 1
+                    pend_ground.discard(index)
+                if is_terrain and index in pend_terrain:
+                    terrain_y[index] = y
+                    terrain_mat[index] = name
+                    pend_terrain.discard(index)
 
     for index, material in enumerate(surface_mat):
         water[index] = material in WATER_TOP_BLOCKS
@@ -388,6 +417,9 @@ def build_chunk_record(cx, cz, surface, stats, source="base"):
         "composition": {
             "counts": class_counts,
             "top_blocks": stats.get("top_blocks") or [],
+            "engineered_blocks": stats.get("engineered_blocks") or [],
+            "rail_columns": stats.get("rail_columns") or [],
+            "rail_column_count": stats.get("rail_column_count", 0),
             "strong_indicators": stats.get("strong_indicator_types") or [],
             "strong_indicator_count": stats.get("strong_indicator_count", 0),
             "dominant_biome": stats.get("dominant_biome"),

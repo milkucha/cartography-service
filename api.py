@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 import perception
 import prefetch
+import terrain_queries
 import topography
 
 log = logging.getLogger("topography.api")
@@ -76,6 +77,10 @@ class TopographyAPI:
                         return self._area_composition(params)
                     if parsed.path == "/shoreline":
                         return self._shoreline(params)
+                    if parsed.path == "/flat_areas":
+                        return self._flat_areas(params)
+                    if parsed.path == "/bridge_span":
+                        return self._bridge_span(params)
                     if parsed.path == "/recall":
                         return self._recall(params)
                     if parsed.path == "/chunk":
@@ -164,6 +169,30 @@ class TopographyAPI:
                 z = _int_param(params, "z")
                 radius = _radius_param(params)
                 result = topography.shoreline_polygon(store, x, z, radius)
+                self._send(200, result)
+
+            def _flat_areas(self, params):
+                x = _int_param(params, "x")
+                z = _int_param(params, "z")
+                result = terrain_queries.flat_areas(
+                    store, x, z,
+                    radius=_size_param(params, "radius", 64, terrain_queries.MAX_FLAT_RADIUS),
+                    width=_size_param(params, "width", 9, terrain_queries.MAX_FOOTPRINT),
+                    depth=_size_param(params, "depth", 9, terrain_queries.MAX_FOOTPRINT),
+                    max_delta=_size_param(params, "max_delta", 1, 64, minimum=0),
+                )
+                self._send(200, result)
+
+            def _bridge_span(self, params):
+                x = _int_param(params, "x")
+                z = _int_param(params, "z")
+                if params.get("x2") and params.get("z2"):
+                    result = terrain_queries.bridge_span(
+                        store, x, z, target=(_int_param(params, "x2"), _int_param(params, "z2"))
+                    )
+                else:
+                    direction = (params.get("dir") or [""])[0].strip().lower()
+                    result = terrain_queries.bridge_span(store, x, z, direction=direction)
                 self._send(200, result)
 
             def _recall(self, params):
@@ -266,7 +295,7 @@ def _radius_param(params, default=32):
     return radius
 
 
-def _size_param(params, name, default, maximum):
+def _size_param(params, name, default, maximum, minimum=1):
     values = params.get(name)
     if not values:
         return default
@@ -274,8 +303,8 @@ def _size_param(params, name, default, maximum):
         size = int(float(values[0]))
     except (TypeError, ValueError):
         raise ValueError(f"Parameter '{name}' must be a number")
-    if size < 1 or size > maximum:
-        raise ValueError(f"Parameter '{name}' must be between 1 and {maximum}")
+    if size < minimum or size > maximum:
+        raise ValueError(f"Parameter '{name}' must be between {minimum} and {maximum}")
     return size
 
 

@@ -15,6 +15,8 @@ import mc_blocks
 import palette
 
 TOP_BLOCKS_LIMIT = 8
+ENGINEERED_BLOCKS_LIMIT = 8
+RAIL_COLUMNS_LIMIT = 48
 
 # How far below the chunk's lowest surface height a section can start and
 # still be treated as "possibly a basement/foundation" rather than deep
@@ -142,9 +144,20 @@ def analyze_chunk(chunk_root, cx, cz):
 
     dominant_biome = biome_counts.most_common(1)[0][0] if biome_counts else None
 
+    # Air and unclassified blocks carry no information for a prompt line, and
+    # a per-chunk top-N dominated by them hides small structures.
     top_blocks = [
-        (name, count) for name, count in decoded_counts.most_common(TOP_BLOCKS_LIMIT)
-    ]
+        (name, count)
+        for name, count in decoded_counts.most_common()
+        if mc_blocks.classify_block(name) not in ("air", "unknown")
+    ][:TOP_BLOCKS_LIMIT]
+    # Kept separately so building materials survive the top-N cut above.
+    engineered_blocks = [
+        (name, count)
+        for name, count in decoded_counts.most_common()
+        if mc_blocks.classify_block(name) == "engineered"
+    ][:ENGINEERED_BLOCKS_LIMIT]
+    rail_columns = sorted({(p[0], p[2]) for p in tracked_positions})[:RAIL_COLUMNS_LIMIT]
 
     return {
         "artificiality_score": artificiality_score,
@@ -163,6 +176,9 @@ def analyze_chunk(chunk_root, cx, cz):
         "surface_min_y": surface_min,
         "depth_cutoff_y": depth_cutoff_y,
         "top_blocks": top_blocks,
+        "engineered_blocks": engineered_blocks,
+        "rail_columns": [[x, z] for x, z in rail_columns],
+        "rail_column_count": len({(p[0], p[2]) for p in tracked_positions}),
         "tracked_positions": tracked_positions,
         "warnings": warnings,
     }

@@ -25,6 +25,8 @@ DIRT = "minecraft:dirt"
 GRASS = "minecraft:grass_block"
 SAND = "minecraft:sand"
 WATER = "minecraft:water"
+LOG = "minecraft:oak_log"
+LEAVES = "minecraft:oak_leaves"
 
 
 # ---------------------------------------------------------------- NBT writer
@@ -155,12 +157,15 @@ def build_chunk_root(
     surface_fn=None,
     water_level_fn=None,
     biome: str = "minecraft:plains",
+    extras_fn=None,
 ) -> bytes:
     """Encode one chunk as a root NBT compound.
 
     ``ground_fn(x, z)`` returns the solid ground height (or None for an empty
     column), ``surface_fn(x, z)`` the surface block name, and
     ``water_level_fn(x, z)`` the water surface height (or None for dry land).
+    ``extras_fn(x, z)`` optionally returns ``{y: block_name}`` of blocks placed
+    on top of the column (tree trunks, leaves, buildings).
     """
     surface_fn = surface_fn or (lambda x, z: GRASS)
     water_level_fn = water_level_fn or (lambda x, z: None)
@@ -174,12 +179,18 @@ def build_chunk_root(
                 continue
             level = water_level_fn(x, z)
             highest = max(highest, ground, level if level is not None else ground)
+            if extras_fn is not None:
+                highest = max([highest, *(extras_fn(x, z) or {})])
 
     def block_at(world_y, local_x, local_z):
         x, z = cx * 16 + local_x, cz * 16 + local_z
         ground = ground_fn(x, z)
         if ground is None:
             return AIR
+        if extras_fn is not None:
+            extra = (extras_fn(x, z) or {}).get(world_y)
+            if extra is not None:
+                return extra
         level = water_level_fn(x, z)
         top = level if level is not None and level > ground else ground
         if world_y > top:
@@ -270,6 +281,7 @@ def make_record(
     surface: str = GRASS,
     ground_material: str = GRASS,
     biome: str = "minecraft:plains",
+    terrain_height=None,
 ):
     """Build a compact chunk record with the same shape as loader output."""
     water = water_level is not None and water_level > height
@@ -285,6 +297,8 @@ def make_record(
             "ground_y": [height] * 256,
             "ground_materials": [ground_material] * 256,
             "water": [water] * 256,
+            "terrain_y": [height if terrain_height is None else terrain_height] * 256,
+            "terrain_materials": [ground_material] * 256,
         },
         "composition": {
             "counts": {
