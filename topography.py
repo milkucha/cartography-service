@@ -6,6 +6,7 @@ import math
 from collections import Counter
 
 import mc_blocks
+import perception
 
 WATER_BLOCKS = {
     "minecraft:water",
@@ -42,8 +43,25 @@ def surface_column(store, x: int, z: int):
         "material": surface["materials"][idx],
         "ground_y": surface["ground_y"][idx],
         "ground_material": surface["ground_materials"][idx],
+        "terrain_y": _terrain_at(surface, idx),
+        "terrain_material": _terrain_material_at(surface, idx),
         "water": surface["water"][idx],
     }
+
+
+def _terrain_at(surface, idx):
+    """Leaf-free ground height, falling back to ground_y for old rows."""
+    ys = surface.get("terrain_y")
+    if ys is None:
+        ys = surface["ground_y"]
+    return ys[idx]
+
+
+def _terrain_material_at(surface, idx):
+    mats = surface.get("terrain_materials")
+    if mats is None:
+        mats = surface["ground_materials"]
+    return mats[idx]
 
 
 def _bresenham(x1: int, z1: int, x2: int, z2: int):
@@ -79,6 +97,7 @@ def _runs(points):
             run["x2"] = point["x"]
             run["z2"] = point["z"]
             run["length"] += 1
+            _extend_bed(run, point)
         else:
             runs.append(
                 {
@@ -92,9 +111,18 @@ def _runs(points):
                     "length": 1,
                 }
             )
+            _extend_bed(runs[-1], point)
     for run in runs:
         run.pop("_key", None)
     return runs
+
+
+def _extend_bed(run, point):
+    """Track water-bed (terrain) height range on a water run."""
+    bed = point.get("ground_y") if point.get("terrain_y") is None else point.get("terrain_y")
+    if point.get("water") and bed is not None:
+        run["bed_min"] = bed if "bed_min" not in run else min(run["bed_min"], bed)
+        run["bed_max"] = bed if "bed_max" not in run else max(run["bed_max"], bed)
 
 
 def heightmap_line(store, x1: int, z1: int, x2: int, z2: int):
@@ -112,6 +140,7 @@ def heightmap_line(store, x1: int, z1: int, x2: int, z2: int):
                     "y": point["y"],
                     "material": point["material"],
                     "ground_y": point["ground_y"],
+                    "terrain_y": point["terrain_y"],
                     "water": point["water"],
                 }
             )
@@ -121,14 +150,17 @@ def heightmap_line(store, x1: int, z1: int, x2: int, z2: int):
         if prev["y"] is None or current["y"] is None:
             continue
         if prev["water"] != current["water"]:
-            transitions.append(
-                {
-                    "x": current["x"],
-                    "z": current["z"],
-                    "from": "water" if prev["water"] else "land",
-                    "to": "water" if current["water"] else "land",
-                }
-            )
+            transition = {
+                "x": current["x"],
+                "z": current["z"],
+                "from": "water" if prev["water"] else "land",
+                "to": "water" if current["water"] else "land",
+            }
+            wet = current if current["water"] else prev
+            bed = wet.get("terrain_y") if wet.get("terrain_y") is not None else wet.get("ground_y")
+            if bed is not None:
+                transition["bed_y"] = bed
+            transitions.append(transition)
 
     known = [p["y"] for p in points if p["y"] is not None]
     return {
@@ -176,6 +208,7 @@ def _window_grid(store, center_x: int, center_z: int, radius: int):
                 "y": surface["y"][idx],
                 "material": surface["materials"][idx],
                 "ground_y": surface["ground_y"][idx],
+                "terrain_y": _terrain_at(surface, idx),
                 "water": surface["water"][idx],
             }
     return grid, chunks, missing
@@ -393,13 +426,7 @@ def area_summary(store, center_x: int, center_z: int, radius: int):
         comp = data.get("composition") or {}
         for key, value in (comp.get("counts") or {}).items():
             counts[key] += value
-        for name, count in comp.get("top_blocks") or []:
-            top_blocks[name] += count
-            try:
-                if mc_blocks.classify_block(name) == "engineered":
-                    engineered_blocks[name] += count
-            except Exception:
-                pass
+        perception.accumulate_blocks(comp, top_blocks, engineered_blocks)
         for name in comp.get("strong_indicators") or []:
             indicators[name] += 1
         if comp.get("dominant_biome"):
@@ -407,12 +434,13 @@ def area_summary(store, center_x: int, center_z: int, radius: int):
         artificiality.append(comp.get("artificiality_score") or 0.0)
 
     for (world_x, world_z), col in grid.items():
-        if col["ground_y"] is not None:
-            heights.append(col["ground_y"])
+        terrain_y = col["terrain_y"]
+        if terrain_y is not None:
+            heights.append(terrain_y)
             if not col["water"] and (
-                highest_ground is None or col["ground_y"] > highest_ground["y"]
+                highest_ground is None or terrain_y > highest_ground["y"]
             ):
-                highest_ground = {"x": world_x, "z": world_z, "y": col["ground_y"]}
+                highest_ground = {"x": world_x, "z": world_z, "y": terrain_y}
         if col["water"]:
             water += 1
 

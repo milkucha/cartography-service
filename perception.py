@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import time
 from collections import Counter
+from functools import lru_cache
 
 import mc_blocks
 
@@ -123,6 +124,7 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
     for level in lod_levels(cx1, cz1, size_chunks):
         levels.append(_build_level(level, records, materials))
 
+    extents = _extents(records)
     composition, biome = _composition_summary(records)
     updated_at = max(
         (float(record.get("updated_at") or 0.0) for record in records.values()),
@@ -138,8 +140,8 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
         "window": {"cx1": cx1, "cz1": cz1, "cx2": cx2, "cz2": cz2},
         "resolution": "lod",
         "lod": levels,
-        "surface": _surface_summary(records),
-        "terrain": _terrain_summary(records, x, z),
+        "surface": _surface_summary(records, extents),
+        "terrain": _terrain_summary(records, x, z, extents),
         "water": _water_summary(records, x, z),
         "biome": biome,
         "composition": composition,
@@ -235,73 +237,176 @@ def _cell_stats(records, cx0, cz0, cell_chunks, materials):
 
 
 # -------------------------------------------------------------------- summaries
-def _surface_summary(records):
-    heights = []
+def terrain_arrays(surface):
+    """Return ``(terrain_y, terrain_materials)`` with a ``ground_y`` fallback.
+
+    Old cached rows have no ``terrain_*`` arrays; they fall back to the
+    pre-existing ground arrays (which may include tree canopies).
+    """
+    ys = surface.get("terrain_y")
+    if ys is None:
+        return surface.get("ground_y") or [], surface.get("ground_materials") or []
+    mats = surface.get("terrain_materials")
+    if mats is None:
+        mats = surface.get("ground_materials") or []
+    return ys, mats
+
+
+def _chunk_extent(surface):
+    """(dry_lo, dry_hi, any_lo, any_hi) of terrain height for one chunk."""
+    ys, _ = terrain_arrays(surface)
+    water = surface.get("water") or []
+    known = [y for y in ys if y is not None]
+    if not known:
+        return None
+    any_lo, any_hi = min(known), max(known)
+    if not any(water):
+        return any_lo, any_hi, any_lo, any_hi
+    dry = [y for y, w in zip(ys, water) if y is not None and not w]
+    if len(dry) < len(known) and len(water) < len(ys):  # ragged: be conservative
+        dry = known
+    if not dry:
+        return None, None, any_lo, any_hi
+    return min(dry), max(dry), any_lo, any_hi
+
+
+def _extents(records):
+    return {key: _chunk_extent(rec.get("surface") or {}) for key, rec in records.items()}
+
+
+def _terrain_relief(extents):
+    """max-min of leaf-free terrain height over dry columns (None if unknown)."""
+    dry = [e for e in extents.values() if e and e[0] is not None]
+    if dry:
+        return max(e[1] for e in dry) - min(e[0] for e in dry)
+    wet = [e for e in extents.values() if e]
+    if wet:
+        return max(e[3] for e in wet) - min(e[2] for e in wet)
+    return None
+
+
+def _surface_summary(records, extents=None):
+    total = 0
+    count = 0
+    min_y = max_y = None
     for record in records.values():
         surface = record.get("surface") or {}
-        for y in surface.get("y") or []:
-            if y is not None:
-                heights.append(y)
-    if not heights:
+        ys = [y for y in surface.get("y") or [] if y is not None]
+        if not ys:
+            continue
+        total += sum(ys)
+        count += len(ys)
+        lo, hi = min(ys), max(ys)
+        min_y = lo if min_y is None or lo < min_y else min_y
+        max_y = hi if max_y is None or hi > max_y else max_y
+    if not count:
         return {"min_y": None, "max_y": None, "avg_y": None, "relief": None}
-    min_y = min(heights)
-    max_y = max(heights)
+    relief = _terrain_relief(extents if extents is not None else _extents(records))
     return {
         "min_y": min_y,
         "max_y": max_y,
-        "avg_y": round(sum(heights) / len(heights), 1),
-        "relief": max_y - min_y,
+        "avg_y": round(total / count, 1),
+        "relief": relief if relief is not None else max_y - min_y,
     }
 
 
-def _terrain_summary(records, x, z):
-    """Summarise the solid-ground surface: peak, low point, and per-direction peaks."""
-    highest = None
-    lowest = None
-    by_direction = {}
+_OFFSETS_X = [i % 16 for i in range(256)]
+_OFFSETS_Z = [i // 16 for i in range(256)]
 
+
+@lru_cache(maxsize=1 << 17)
+def _direction_cached(dx, dz):
+    return _direction(dx, dz)
+
+
+def _terrain_summary(records, x, z, extents=None):
+    """Summarise leaf-free dry ground: peak, low point, and per-direction peaks.
+
+    Uses ``terrain_y`` (canopy-free). Chunks are visited nearest-first and
+    pruned by their max/min so most columns are never touched.
+    """
+    highest = None  # (y, dx, dz, material)
+    lowest = None
+    best_dir = {}  # direction -> (y, dx, dz)
+
+    if extents is None:
+        extents = _extents(records)
+    prepared = []
     for (cx, cz), record in records.items():
+        extent = extents.get((cx, cz))
+        if not extent or extent[0] is None:
+            continue
         surface = record.get("surface") or {}
-        ground_y = surface.get("ground_y") or []
+        ys, mats = terrain_arrays(surface)
         water = surface.get("water") or []
-        materials = surface.get("ground_materials") or []
-        for index, y in enumerate(ground_y):
+        bx = cx * 16 - x
+        bz = cz * 16 - z
+        near = (bx + 7.5) ** 2 + (bz + 7.5) ** 2
+        has_water = extent[2] != extent[0] or extent[3] != extent[1] or any(water)
+        prepared.append((near, bx, bz, extent[1], extent[0], ys, mats, water if has_water else None))
+    prepared.sort(key=lambda item: item[0])
+
+    n_dirs = 8
+    for _, bx, bz, cmax, cmin, ys, mats, water in prepared:
+        need_high = highest is None or cmax > highest[0]
+        need_low = lowest is None or cmin < lowest[0]
+        thr = None
+        if len(best_dir) >= n_dirs:
+            thr = min(v[0] for v in best_dir.values())
+        need_dir = thr is None or cmax > thr
+        if not (need_high or need_low or need_dir):
+            continue
+        for index in range(len(ys)):
+            y = ys[index]
             if y is None:
                 continue
-            if index < len(water) and water[index]:
+            if water is not None and index < len(water) and water[index]:
                 continue
-            world_x = cx * 16 + (index % 16)
-            world_z = cz * 16 + (index // 16)
-            dx = world_x - x
-            dz = world_z - z
-            distance = math.hypot(dx, dz)
-            direction = _direction(dx, dz)
-            entry = {
-                "x": world_x,
-                "z": world_z,
-                "y": int(y),
-                "dx": dx,
-                "dz": dz,
-                "distance": round(distance, 1),
-                "direction": direction,
-                "material": materials[index] if index < len(materials) else None,
-            }
-            if highest is None or entry["y"] > highest["y"]:
-                highest = entry
-            if lowest is None or entry["y"] < lowest["y"]:
-                lowest = entry
-            previous = by_direction.get(direction)
-            if previous is None or entry["y"] > previous["y"]:
-                by_direction[direction] = {
-                    "y": int(y),
-                    "distance": round(distance, 1),
-                    "direction": direction,
-                }
+            if highest is not None and lowest is not None and best_dir:
+                # fast reject: cannot improve anything unless above the
+                # weakest direction peak or beyond the extrema
+                if y <= highest[0] and y >= lowest[0]:
+                    if thr is not None and y <= thr:
+                        continue
+            dx = bx + _OFFSETS_X[index]
+            dz = bz + _OFFSETS_Z[index]
+            if highest is None or y > highest[0]:
+                highest = (y, dx, dz, mats[index] if index < len(mats) else None)
+            if lowest is None or y < lowest[0]:
+                lowest = (y, dx, dz, mats[index] if index < len(mats) else None)
+            direction = _direction_cached(dx, dz)
+            previous = best_dir.get(direction)
+            if previous is None or y > previous[0]:
+                best_dir[direction] = (y, dx, dz)
+                if len(best_dir) >= n_dirs:
+                    thr = min(v[0] for v in best_dir.values())
 
+    def entry(item):
+        y, dx, dz, material = item
+        return {
+            "x": x + dx,
+            "z": z + dz,
+            "y": int(y),
+            "dx": dx,
+            "dz": dz,
+            "distance": round(math.hypot(dx, dz), 1),
+            "direction": _direction_cached(dx, dz),
+            "material": material,
+        }
+
+    by_direction = {
+        direction: {
+            "y": int(y),
+            "distance": round(math.hypot(dx, dz), 1),
+            "direction": direction,
+        }
+        for direction, (y, dx, dz) in best_dir.items()
+    }
     return {
-        "highest": highest,
-        "lowest": lowest,
+        "highest": entry(highest) if highest else None,
+        "lowest": entry(lowest) if lowest else None,
         "highest_by_direction": by_direction,
+        "relief": _terrain_relief(extents),
     }
 
 
@@ -350,6 +455,38 @@ def _direction(dx, dz):
     return _DIRECTIONS[int(round(angle / 45.0)) % 8]
 
 
+def accumulate_blocks(composition, top_blocks, engineered_blocks):
+    """Add one chunk's block lists into ``top_blocks`` / ``engineered_blocks``.
+
+    Air and unclassified blocks are dropped from ``top_blocks``. Engineered
+    blocks come from the per-chunk ``engineered_blocks`` list when present
+    (not subject to the top-N cap) and from ``top_blocks`` for old rows.
+    """
+    def pairs(items):
+        for entry in items or []:
+            try:
+                yield entry[0], int(entry[1])
+            except (IndexError, TypeError, ValueError):
+                continue
+
+    for name, count in pairs(composition.get("top_blocks")):
+        try:
+            kind = mc_blocks.classify_block(name)
+        except Exception:
+            kind = "unknown"
+        if kind in ("air", "unknown"):
+            continue
+        top_blocks[name] += count
+        if kind == "engineered" and "engineered_blocks" not in composition:
+            engineered_blocks[name] += count
+    for name, count in pairs(composition.get("engineered_blocks")):
+        engineered_blocks[name] += count
+        # make sure building materials are visible in top_blocks totals too
+        # only if the chunk's own top-N missed them (not double counted)
+        if name not in {e[0] for e in composition.get("top_blocks") or []}:
+            top_blocks[name] += count
+
+
 def _composition_summary(records):
     totals = Counter()
     top_blocks = Counter()
@@ -362,18 +499,7 @@ def _composition_summary(records):
         for key in ("natural", "engineered", "liquid", "air", "unknown"):
             totals[key] += int(counts.get(key, 0) or 0)
 
-        for entry in composition.get("top_blocks") or []:
-            try:
-                name = entry[0]
-                count = int(entry[1])
-            except (IndexError, TypeError, ValueError):
-                continue
-            top_blocks[name] += count
-            try:
-                if mc_blocks.classify_block(name) == "engineered":
-                    engineered_blocks[name] += count
-            except Exception:
-                pass
+        accumulate_blocks(composition, top_blocks, engineered_blocks)
 
         biome = composition.get("dominant_biome")
         if biome:
