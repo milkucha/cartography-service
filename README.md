@@ -19,7 +19,7 @@ Options (or the matching environment variable):
 | `--world` | `TOPOGRAPHY_WORLD` | `world` | World/save folder containing `region/` |
 | `--host` | `TOPOGRAPHY_HOST` | `127.0.0.1` | Bind address |
 | `--port` | `TOPOGRAPHY_PORT` | `8090` | HTTP port |
-| `--db` | `TOPOGRAPHY_DB` | `map_store.db` | SQLite cold-store path |
+| `--db` | `TOPOGRAPHY_DB` | `maps/<level>-<worldid>.db` | SQLite store path. Default is one database per world (next to `main.py`), so chunk caches and per-agent seen ledgers never mix between worlds. Falls back to `map_store.db` when there is no readable save. |
 | `--preload` | `TOPOGRAPHY_PRELOAD` | off | Decode every chunk at startup |
 | `--preload-limit` | `TOPOGRAPHY_PRELOAD_LIMIT` | `0` | Max chunks to preload (0 = all) |
 
@@ -34,8 +34,13 @@ small worlds or benchmarks.
 Full request/response schemas and the diff contract:
 
 - Repo contract: [`../CONTRACT.md`](../CONTRACT.md)
-- Endpoints: `/health`, `/topography`, `/area_composition`, `/shoreline`, `/recall`, `/chunk`,
-  and `POST /diff`.
+- Endpoints: `/health`, `/perception`, `/topography`, `/area_composition`, `/shoreline`, `/recall`,
+  `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/survey`, `/seen_stats`, and
+  `POST /diff`, `POST /chunk_snapshot`, `POST /position`, `POST /seen`.
+- `terrain_y` / `terrain_materials` (per column) are the topmost *natural ground-forming* block
+  (grass, dirt, sand, gravel, stone family, ores, snow, ...), scanning down past roofs, floors,
+  decks, logs, leaves, plants and liquids. The whitelist lives in `terrain_rules.py` and is mirrored
+  in the plugin (`tools/check_terrain_rules_sync.py` fails if they drift).
 
 ## Settlements, survey and the seen ledger
 
@@ -46,10 +51,10 @@ Full request/response schemas and the diff contract:
 | `POST /seen` `{"agent","dimension","chunks":[[cx,cz],...]}` | Record chunks an agent has seen (max 5000 per call; non-overworld => `{"accepted":0,"ignored":n}`). |
 | `GET /seen_stats?agent=` | `{"agent","chunks","first_seen","last_seen"}`. |
 
-Detection (`settlements.py`): `terrain_y` counts roofs as ground, so a structure column is a
-built surface material (planks, stairs, slabs, bricks, wool, concrete, glass, cobblestone, logs)
-at least 2 blocks above a local baseline (minimum ground over about +-10 blocks, water at its
-surface). Columns form buildings (trees, thin strips and scatter are dropped); buildings within
+Detection (`settlements.py`): a structure column is a built surface material (planks, stairs,
+slabs, bricks, wool, concrete, glass, cobblestone, logs) at least 2 blocks above `terrain_y`
+(rows cached before that field existed fall back to a local-minimum baseline). A built column
+with water on both sides within 3 blocks (a bridge deck) is measured from the water surface. Columns form buildings (trees, thin strips and scatter are dropped); buildings within
 32 blocks form a cluster: 3+ buildings, or 2 plus domestic indicators (bed, bell, chest,
 furnace, crafting table ...), is a `settlement`, otherwise an `outpost`. Rails and torches are
 never evidence. Low confidence means a weak signal, not a confirmed small or absent settlement.
