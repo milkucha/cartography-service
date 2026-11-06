@@ -228,6 +228,26 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(status, 400, params)
             self.assertIn("error", payload)
 
+    def test_position_prefetch_endpoint(self):
+        status, payload = self._request(
+            "POST", "/position", body={"x": 8, "z": 8, "size_chunks": 4}
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["queued"], 16)
+
+    def test_position_prefetch_validation(self):
+        for body in (
+            {},
+            {"x": 0},
+            {"x": 0, "z": 0, "size_chunks": 0},
+            {"x": 0, "z": 0, "size_chunks": 33},
+            {"x": "nope", "z": 0},
+        ):
+            status, payload = self._request("POST", "/position", body=body)
+            self.assertEqual(status, 400, body)
+            self.assertIn("error", payload)
+
     def test_diff_rejects_bad_payload(self):
         status, payload = self._request(
             "POST", "/diff", body={"deltas": [{"action": "place"}]}

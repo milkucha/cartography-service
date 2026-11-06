@@ -149,15 +149,7 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
 # --------------------------------------------------------------------- window
 def _load_window(store, center_cx, center_cz, size_chunks, cx1, cz1, cx2, cz2):
     """Load the window and return ``({(cx, cz): record}, missing)``."""
-    touch_window = getattr(store, "touch_window", None)
-    if touch_window is not None:
-        records, _ = touch_window(center_cx, center_cz, size_chunks)
-    else:
-        # TODO(1B/Phase 2): remove this temporary shim once 1A's touch_window
-        # lands. get_window uses an inclusive radius, so it loads a slightly
-        # larger square and we clip it back to the requested window below.
-        radius = size_chunks // 2
-        records, _ = store.get_window(center_cx, center_cz, radius)
+    records, _ = store.touch_window(center_cx, center_cz, size_chunks)
 
     record_map = {}
     for record in records or []:
