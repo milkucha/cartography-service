@@ -18,6 +18,7 @@ import time
 
 import loader
 import map_store
+import prefetch
 from api import TopographyAPI
 
 log = logging.getLogger("topography")
@@ -104,6 +105,8 @@ def main(argv=None):
         preload(store, args.preload_limit)
 
     api = TopographyAPI(store, args.host, args.port)
+    prefetcher = api.prefetcher
+    prefetcher.start()
     server_thread = threading.Thread(target=api.serve_forever, name="topography-http", daemon=True)
     server_thread.start()
 
@@ -114,6 +117,7 @@ def main(argv=None):
         log.info("Shutting down...")
     finally:
         api.shutdown()
+        prefetcher.stop()
         store.stop()
         chunk_loader.close()
     return 0

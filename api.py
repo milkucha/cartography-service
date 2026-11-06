@@ -7,6 +7,8 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import perception
+import prefetch
 import topography
 
 log = logging.getLogger("topography.api")
@@ -14,17 +16,22 @@ log = logging.getLogger("topography.api")
 MAX_RADIUS = 256
 MAX_LINE_LENGTH = 4096
 MAX_BODY_BYTES = 1_000_000
+MAX_PERCEPTION_SIZE = 32
+MAX_PERCEPTION_CHUNKS = 1024
+DEFAULT_PERCEPTION_SIZE = 16
 
 
 class TopographyAPI:
-    def __init__(self, store, host: str = "127.0.0.1", port: int = 8090):
+    def __init__(self, store, host: str = "127.0.0.1", port: int = 8090, prefetcher=None):
         self.store = store
         self.host = host
         self.port = port
         self.server: ThreadingHTTPServer | None = None
+        self.prefetcher = prefetcher or prefetch.PrefetchWorker(store)
 
     def make_handler(self):
         store = self.store
+        prefetcher = self.prefetcher
 
         class Handler(BaseHTTPRequestHandler):
             server_version = "TopographyService/1.0"
@@ -61,6 +68,8 @@ class TopographyAPI:
                 try:
                     if parsed.path in ("/", "/health"):
                         return self._health()
+                    if parsed.path == "/perception":
+                        return self._perception(params)
                     if parsed.path == "/topography":
                         return self._topography(params)
                     if parsed.path == "/area_composition":
@@ -80,7 +89,7 @@ class TopographyAPI:
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path != "/diff":
+                if parsed.path not in ("/diff", "/position"):
                     return self._error(404, f"Unknown endpoint {parsed.path}")
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -95,6 +104,8 @@ class TopographyAPI:
                     payload = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     return self._error(400, f"Invalid JSON: {exc}")
+                if parsed.path == "/position":
+                    return self._position(payload)
                 return self._diff(payload)
 
             # ------------------------------------------------------- endpoints
@@ -110,6 +121,23 @@ class TopographyAPI:
                 }
                 health.update(store.stats())
                 self._send(200, health)
+
+            def _perception(self, params):
+                x = _int_param(params, "x")
+                z = _int_param(params, "z")
+                size_chunks = _size_param(
+                    params, "size_chunks", DEFAULT_PERCEPTION_SIZE, MAX_PERCEPTION_SIZE
+                )
+                if size_chunks * size_chunks > MAX_PERCEPTION_CHUNKS:
+                    raise ValueError(
+                        f"Perception window too large ({size_chunks * size_chunks} chunks); "
+                        f"max {MAX_PERCEPTION_CHUNKS}"
+                    )
+                materials = _bool_param(params, "materials", default=False)
+                result = perception.build_perception(
+                    store, x, z, size_chunks, materials=materials
+                )
+                self._send(200, result)
 
             def _topography(self, params):
                 x1 = _int_param(params, "x1")
@@ -154,6 +182,33 @@ class TopographyAPI:
                     return self._error(404, f"No chunk at ({cx}, {cz})")
                 self._send(200, data)
 
+            def _position(self, payload):
+                if not isinstance(payload, dict):
+                    return self._error(400, "Expected a JSON object")
+                try:
+                    x = int(payload["x"])
+                    z = int(payload["z"])
+                except (KeyError, TypeError, ValueError):
+                    return self._error(400, "Missing or invalid 'x'/'z'")
+                size_chunks = payload.get("size_chunks", DEFAULT_PERCEPTION_SIZE)
+                try:
+                    size_chunks = int(size_chunks)
+                except (TypeError, ValueError):
+                    return self._error(400, "Parameter 'size_chunks' must be a number")
+                if size_chunks < 1 or size_chunks > MAX_PERCEPTION_SIZE:
+                    return self._error(
+                        400,
+                        f"Parameter 'size_chunks' must be between 1 and {MAX_PERCEPTION_SIZE}",
+                    )
+                if size_chunks * size_chunks > MAX_PERCEPTION_CHUNKS:
+                    return self._error(
+                        400,
+                        f"Perception window too large ({size_chunks * size_chunks} chunks); "
+                        f"max {MAX_PERCEPTION_CHUNKS}",
+                    )
+                queued = prefetcher.submit(x, z, size_chunks)
+                self._send(200, {"accepted": True, "queued": queued})
+
             def _diff(self, payload):
                 if isinstance(payload, dict) and "deltas" in payload:
                     deltas = payload["deltas"]
@@ -176,6 +231,7 @@ class TopographyAPI:
         return Handler
 
     def serve_forever(self):
+        self.prefetcher.start()
         self.server = ThreadingHTTPServer((self.host, self.port), self.make_handler())
         log.info("Topography API listening on http://%s:%s", self.host, self.port)
         self.server.serve_forever()
@@ -184,6 +240,7 @@ class TopographyAPI:
         if self.server is not None:
             self.server.shutdown()
             self.server.server_close()
+        self.prefetcher.stop()
 
 
 def _int_param(params, name):
@@ -207,3 +264,28 @@ def _radius_param(params, default=32):
     if radius < 1 or radius > MAX_RADIUS:
         raise ValueError(f"Parameter 'radius' must be between 1 and {MAX_RADIUS}")
     return radius
+
+
+def _size_param(params, name, default, maximum):
+    values = params.get(name)
+    if not values:
+        return default
+    try:
+        size = int(float(values[0]))
+    except (TypeError, ValueError):
+        raise ValueError(f"Parameter '{name}' must be a number")
+    if size < 1 or size > maximum:
+        raise ValueError(f"Parameter '{name}' must be between 1 and {maximum}")
+    return size
+
+
+def _bool_param(params, name, default=False):
+    values = params.get(name)
+    if not values:
+        return default
+    raw = str(values[0]).strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"Parameter '{name}' must be 0 or 1")

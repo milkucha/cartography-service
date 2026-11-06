@@ -175,6 +175,79 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(chunk["surface"]["y"][index], 65)
         self.assertEqual(chunk["surface"]["materials"][index], "minecraft:grass_block")
 
+    def test_perception_endpoint(self):
+        status, payload = self._request(
+            "GET", "/perception", {"x": 8, "z": 8, "size_chunks": 4}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["service"], "topography")
+        self.assertEqual(payload["resolution"], "lod")
+        self.assertEqual(payload["center"], {"x": 8, "z": 8})
+        self.assertEqual(payload["size_chunks"], 4)
+        self.assertEqual(
+            payload["window"], {"cx1": -2, "cz1": -2, "cx2": 1, "cz2": 1}
+        )
+        self.assertEqual(len(payload["lod"]), 1)
+        self.assertEqual(payload["lod"][0]["cell_chunks"], 1)
+        self.assertEqual(payload["lod"][0]["cells_per_side"], 4)
+        self.assertEqual(len(payload["lod"][0]["heights"]), 16)
+        self.assertEqual(payload["missing_chunks"], 12)
+        self.assertFalse(payload["water"]["at_center"])
+        self.assertEqual(payload["water"]["nearest"]["direction"], "east")
+        self.assertNotIn("materials", payload["lod"][0])
+        self.assertIn("window_version", payload)
+
+    def test_perception_default_size(self):
+        status, payload = self._request("GET", "/perception", {"x": 8, "z": 8})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["size_chunks"], 16)
+        self.assertEqual(len(payload["lod"]), 3)
+
+    def test_perception_materials_flag(self):
+        status, payload = self._request(
+            "GET", "/perception", {"x": 8, "z": 8, "size_chunks": 4, "materials": 1}
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("materials", payload["lod"][0])
+        self.assertEqual(len(payload["lod"][0]["materials"]), 16)
+        self.assertEqual(payload["lod"][0]["materials"][10], "minecraft:grass_block")
+        self.assertEqual(payload["lod"][0]["materials"][11], "minecraft:water")
+
+    def test_perception_param_validation(self):
+        status, payload = self._request("GET", "/perception", {"z": 0})
+        self.assertEqual(status, 400)
+        self.assertIn("error", payload)
+
+        for params in (
+            {"x": 0, "z": 0, "size_chunks": 0},
+            {"x": 0, "z": 0, "size_chunks": 33},
+            {"x": 0, "z": 0, "materials": 2},
+            {"x": "nope", "z": 0},
+        ):
+            status, payload = self._request("GET", "/perception", params)
+            self.assertEqual(status, 400, params)
+            self.assertIn("error", payload)
+
+    def test_position_prefetch_endpoint(self):
+        status, payload = self._request(
+            "POST", "/position", body={"x": 8, "z": 8, "size_chunks": 4}
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["queued"], 16)
+
+    def test_position_prefetch_validation(self):
+        for body in (
+            {},
+            {"x": 0},
+            {"x": 0, "z": 0, "size_chunks": 0},
+            {"x": 0, "z": 0, "size_chunks": 33},
+            {"x": "nope", "z": 0},
+        ):
+            status, payload = self._request("POST", "/position", body=body)
+            self.assertEqual(status, 400, body)
+            self.assertIn("error", payload)
+
     def test_diff_rejects_bad_payload(self):
         status, payload = self._request(
             "POST", "/diff", body={"deltas": [{"action": "place"}]}
