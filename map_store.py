@@ -545,10 +545,18 @@ class MapStore:
         # deltas are honoured only when the break was at/above the recorded top.
         if trusted:
             sy = int(delta["surface_y"])
-            surface["y"][index] = sy
-            surface["materials"][index] = nt_b
-            surface["water"][index] = nt_b in _WATER_TOPS
-            self._set_ground_after_break(surface, index, sy, nt_b, ng_y, ng_b)
+            if nt_b is None or nt_b in mc_blocks.AIR:
+                # Empty column (plugin reports minY - 1 / air).
+                surface["y"][index] = None
+                surface["materials"][index] = None
+                surface["water"][index] = False
+                surface["ground_y"][index] = None
+                surface["ground_materials"][index] = None
+            else:
+                surface["y"][index] = sy
+                surface["materials"][index] = nt_b
+                surface["water"][index] = nt_b in _WATER_TOPS
+                self._set_ground_after_break(surface, index, sy, nt_b, ng_y, ng_b)
         elif top is None or y >= top:
             if nt_y is not None and nt_b is not None:
                 nt_y = int(nt_y)
