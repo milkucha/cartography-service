@@ -22,6 +22,20 @@ class MainWiringTests(unittest.TestCase):
         self.assertEqual(args.port, 9001)
         self.assertTrue(args.preload)
 
+    def test_default_db_is_per_world(self):
+        with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two:
+            a = loader.ChunkLoader(helpers.build_coast_world(one))
+            b = loader.ChunkLoader(helpers.build_coast_world(two))
+            path_a, path_b = main.default_db_path(a), main.default_db_path(b)
+            self.assertNotEqual(path_a, path_b)
+            self.assertEqual(Path(path_a).parent.name, "maps")
+            self.assertEqual(main.default_db_path(a), path_a)  # stable for the same save
+        self.assertEqual(main.default_db_path(loader.ChunkLoader("does/not/exist")), "map_store.db")
+
+    def test_explicit_db_flag_still_wins(self):
+        args = main.build_parser().parse_args(["--db", "x.db"])
+        self.assertEqual(args.db, "x.db")
+
     def test_preload_populates_cold_store(self):
         with tempfile.TemporaryDirectory() as tmp:
             world = helpers.build_coast_world(tmp)
