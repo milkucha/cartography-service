@@ -135,6 +135,7 @@ class ChunkLoader:
         self._regions: OrderedDict[Path, region.RegionFile] = OrderedDict()
         self._index: dict[tuple[int, int], Path] = {}
         self._indexed = False
+        self._index_mtime = None
         self._io_lock = threading.Lock()
 
     @property
@@ -151,16 +152,32 @@ class ChunkLoader:
                     pass
             self._regions.clear()
 
-    def index_regions(self) -> int:
-        """Map region coordinates to files. Safe to call repeatedly."""
-        if self._indexed or not self.available:
+    def index_regions(self, force: bool = False) -> int:
+        """Map region coordinates to files, refreshing when the folder changes.
+
+        A live world keeps generating region files while the service runs, so
+        the index must not be frozen at startup. The folder mtime is cheap to
+        check and changes when files are added or removed; content changes
+        inside an existing region file do not require a re-index.
+        """
+        if not self.available:
+            return 0
+        try:
+            mtime = self.region_dir.stat().st_mtime_ns
+        except OSError:
             return len(self._index)
+        if self._indexed and not force and mtime == self._index_mtime:
+            return len(self._index)
+
+        index: dict[tuple[int, int], Path] = {}
         for path in sorted(self.region_dir.glob("r.*.*.mca")):
             match = REGION_RE.match(path.name)
             if not match:
                 continue
-            self._index[(int(match.group(1)), int(match.group(2)))] = path
+            index[(int(match.group(1)), int(match.group(2)))] = path
+        self._index = index
         self._indexed = True
+        self._index_mtime = mtime
         return len(self._index)
 
     @property

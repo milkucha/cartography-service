@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -101,6 +102,23 @@ class ChunkLoaderTests(unittest.TestCase):
     def test_iter_all_chunks_yields_every_chunk(self):
         chunks = {(record["cx"], record["cz"]) for record in self.loader.iter_all_chunks()}
         self.assertEqual(chunks, {(0, 0), (1, 0), (0, 1), (1, 1)})
+
+    def test_index_refreshes_when_a_region_file_appears(self):
+        self.assertEqual(self.loader.region_count, 1)
+        self.assertIsNone(self.loader.load_chunk(32, 0))
+
+        time.sleep(0.02)
+        chunks = {
+            (0, 0): helpers.build_chunk_root(
+                32, 0, helpers.coast_ground, helpers.coast_surface, helpers.coast_water_level
+            )
+        }
+        helpers.write_region(self.loader.region_dir / "r.1.0.mca", chunks)
+
+        self.assertEqual(self.loader.region_count, 2)
+        record = self.loader.load_chunk(32, 0)
+        self.assertIsNotNone(record)
+        self.assertEqual((record["cx"], record["cz"]), (32, 0))
 
 
 if __name__ == "__main__":
