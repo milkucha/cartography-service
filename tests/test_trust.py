@@ -399,3 +399,15 @@ class ApiTrustTests(StoreCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TerrainRulesDecorationTests(unittest.TestCase):
+    def test_decoration_never_counts_as_ground(self):
+        import terrain_rules
+        for name in ("minecraft:rail", "minecraft:powered_rail", "minecraft:torch",
+                     "minecraft:oak_sign", "minecraft:stone_button", "minecraft:redstone_wire",
+                     "minecraft:oak_leaves", "minecraft:water"):
+            self.assertFalse(terrain_rules.is_ground(name), name)
+        for name in ("minecraft:stone", "minecraft:oak_log", "minecraft:oak_planks",
+                     "minecraft:grass_block"):
+            self.assertTrue(terrain_rules.is_ground(name), name)

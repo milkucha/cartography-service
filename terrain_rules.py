@@ -25,6 +25,18 @@ _VEGETATION = {
     "brown_mushroom", "red_mushroom", "sweet_berry_bush", "fire", "soul_fire",
     "light", "structure_void", "moving_piston",
 }
+# Floor/wall decoration that sits ON the ground (or hangs from it) and must not
+# raise the terrain height. Matched by name suffix; the Java snapshot code in
+# topography-plugin (ColumnSurface.isGroundId) implements the SAME list - keep in sync.
+DECORATION_SUFFIXES = (
+    "rail", "torch", "sign", "banner", "button", "pressure_plate",
+)
+DECORATION_EXACT = {
+    "minecraft:redstone_wire", "minecraft:lever", "minecraft:tripwire",
+    "minecraft:tripwire_hook", "minecraft:repeater", "minecraft:comparator",
+    "minecraft:ladder", "minecraft:string",
+}
+
 NON_GROUND = (
     {f"minecraft:{n}" for n in _VEGETATION}
     | set(mc_blocks.AIR)
@@ -36,4 +48,9 @@ def is_ground(name: str | None) -> bool:
     """True when ``name`` is a block that counts as terrain ground."""
     if not name:
         return False
-    return name not in NON_GROUND and not name.endswith("_leaves")
+    return (
+        name not in NON_GROUND
+        and name not in DECORATION_EXACT
+        and not name.endswith("_leaves")
+        and not name.endswith(DECORATION_SUFFIXES)
+    )
