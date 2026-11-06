@@ -10,6 +10,9 @@ from urllib.parse import parse_qs, urlparse
 import map_store
 import perception
 import prefetch
+import settlements
+import store_view
+import survey
 import terrain_queries
 import topography
 
@@ -73,6 +76,8 @@ class TopographyAPI:
                     dimension = (params.get("dimension") or [None])[0]
                     if not map_store.is_overworld(dimension):
                         return self._unavailable_dimension(dimension)
+                    if parsed.path == "/seen_stats":
+                        return self._seen_stats(params)
                     if parsed.path == "/perception":
                         return self._perception(params)
                     if parsed.path == "/topography":
@@ -89,6 +94,10 @@ class TopographyAPI:
                         return self._recall(params)
                     if parsed.path == "/chunk":
                         return self._chunk(params)
+                    if parsed.path == "/settlements":
+                        return self._settlements(params)
+                    if parsed.path == "/survey":
+                        return self._survey(params)
                     return self._error(404, f"Unknown endpoint {parsed.path}")
                 except ValueError as exc:
                     return self._error(400, str(exc))
@@ -98,7 +107,7 @@ class TopographyAPI:
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path not in ("/diff", "/position", "/chunk_snapshot"):
+                if parsed.path not in ("/diff", "/position", "/chunk_snapshot", "/seen"):
                     return self._error(404, f"Unknown endpoint {parsed.path}")
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -117,9 +126,62 @@ class TopographyAPI:
                     return self._position(payload)
                 if parsed.path == "/chunk_snapshot":
                     return self._chunk_snapshot(payload)
+                if parsed.path == "/seen":
+                    return self._seen(payload)
                 return self._diff(payload)
 
             # ------------------------------------------------------- endpoints
+            def _target(self, params):
+                """Store, or an agent-gated StoreView when ``agent=`` is given."""
+                agent = (params.get("agent") or [""])[0].strip()
+                if not agent:
+                    return store
+                return store_view.StoreView(store, agent[:64])
+
+            @staticmethod
+            def _tag_unexplored(result, target):
+                if target is not store and isinstance(result, dict):
+                    result.setdefault("unexplored_chunks", len(target.unexplored))
+                return result
+
+            def _seen(self, payload):
+                if not isinstance(payload, dict):
+                    return self._error(400, "Expected a JSON object")
+                agent = str(payload.get("agent") or "").strip()[:64]
+                if not agent:
+                    return self._error(400, "Missing 'agent'")
+                chunks = payload.get("chunks")
+                if not isinstance(chunks, list):
+                    return self._error(400, "Expected 'chunks': [[cx, cz], ...]")
+                if not map_store.is_overworld(payload.get("dimension")):
+                    return self._send(200, {"accepted": 0, "ignored": len(chunks)})
+                accepted = store.mark_seen(agent, chunks, payload.get("dimension"))
+                result = {"accepted": accepted}
+                if len(chunks) > accepted:
+                    result["ignored"] = len(chunks) - accepted
+                self._send(200, result)
+
+            def _seen_stats(self, params):
+                agent = (params.get("agent") or [""])[0].strip()
+                if not agent:
+                    raise ValueError("Missing required parameter 'agent'")
+                self._send(200, store.seen_stats(agent[:64]))
+
+            def _settlements(self, params):
+                target = self._target(params)
+                x = _int_param(params, "x")
+                z = _int_param(params, "z")
+                radius = _size_param(params, "radius", 96, settlements.MAX_RADIUS,
+                                     minimum=settlements.MIN_RADIUS)
+                self._send(200, settlements.find_settlements(target, x, z, radius))
+
+            def _survey(self, params):
+                target = self._target(params)
+                result = survey.survey(
+                    target, _int_param(params, "x1"), _int_param(params, "z1"),
+                    _int_param(params, "x2"), _int_param(params, "z2"),
+                )
+                self._send(200, result)
             def _health(self):
                 health = {
                     "status": "ok",
@@ -145,10 +207,11 @@ class TopographyAPI:
                         f"max {MAX_PERCEPTION_CHUNKS}"
                     )
                 materials = _bool_param(params, "materials", default=False)
+                target = self._target(params)
                 result = perception.build_perception(
-                    store, x, z, size_chunks, materials=materials
+                    target, x, z, size_chunks, materials=materials
                 )
-                self._send(200, result)
+                self._send(200, self._tag_unexplored(result, target))
 
             def _topography(self, params):
                 x1 = _int_param(params, "x1")
@@ -160,60 +223,79 @@ class TopographyAPI:
                     raise ValueError(
                         f"Line too long ({length} samples); max {MAX_LINE_LENGTH}"
                     )
-                result = topography.heightmap_line(store, x1, z1, x2, z2)
-                self._send(200, result)
+                target = self._target(params)
+                result = topography.heightmap_line(target, x1, z1, x2, z2)
+                self._send(200, self._tag_unexplored(result, target))
 
             def _area_composition(self, params):
                 x = _int_param(params, "x")
                 z = _int_param(params, "z")
                 radius = _radius_param(params)
-                result = topography.area_summary(store, x, z, radius)
-                self._send(200, result)
+                target = self._target(params)
+                result = topography.area_summary(target, x, z, radius)
+                self._send(200, self._tag_unexplored(result, target))
 
             def _shoreline(self, params):
                 x = _int_param(params, "x")
                 z = _int_param(params, "z")
                 radius = _radius_param(params)
-                result = topography.shoreline_polygon(store, x, z, radius)
-                self._send(200, result)
+                target = self._target(params)
+                result = topography.shoreline_polygon(target, x, z, radius)
+                self._send(200, self._tag_unexplored(result, target))
 
             def _flat_areas(self, params):
                 x = _int_param(params, "x")
                 z = _int_param(params, "z")
+                target = self._target(params)
                 result = terrain_queries.flat_areas(
-                    store, x, z,
+                    target, x, z,
                     radius=_size_param(params, "radius", 64, terrain_queries.MAX_FLAT_RADIUS),
                     width=_size_param(params, "width", 9, terrain_queries.MAX_FOOTPRINT),
                     depth=_size_param(params, "depth", 9, terrain_queries.MAX_FOOTPRINT),
                     max_delta=_size_param(params, "max_delta", 1, 64, minimum=0),
                 )
-                self._send(200, result)
+                self._send(200, self._tag_unexplored(result, target))
 
             def _bridge_span(self, params):
                 x = _int_param(params, "x")
                 z = _int_param(params, "z")
+                target = self._target(params)
                 if params.get("x2") and params.get("z2"):
                     result = terrain_queries.bridge_span(
-                        store, x, z, target=(_int_param(params, "x2"), _int_param(params, "z2"))
+                        target, x, z, target=(_int_param(params, "x2"), _int_param(params, "z2"))
                     )
                 else:
                     direction = (params.get("dir") or [""])[0].strip().lower()
-                    result = terrain_queries.bridge_span(store, x, z, direction=direction)
-                self._send(200, result)
+                    result = terrain_queries.bridge_span(target, x, z, direction=direction)
+                self._send(200, self._tag_unexplored(result, target))
 
             def _recall(self, params):
                 x = _int_param(params, "x")
                 z = _int_param(params, "z")
-                result = topography.recall(store, x, z)
+                target = self._target(params)
+                result = topography.recall(target, x, z)
                 if result is None:
+                    if target is not store and target.unexplored:
+                        return self._error(
+                            404,
+                            f"Chunk at ({x}, {z}) has not been explored by agent "
+                            f"'{target.agent}' yet",
+                        )
                     return self._error(404, f"No stored chunk at ({x}, {z})")
                 self._send(200, result)
 
             def _chunk(self, params):
                 cx = _int_param(params, "cx")
                 cz = _int_param(params, "cz")
-                data = store.get_or_load(cx, cz)
+                target = self._target(params)
+                data = target.get_or_load(cx, cz)
                 if data is None:
+                    if target is not store and target.unexplored:
+                        return self._error(
+                            404,
+                            f"Chunk ({cx}, {cz}) has not been explored by agent "
+                            f"'{target.agent}' yet",
+                        )
                     return self._error(404, f"No chunk at ({cx}, {cz})")
                 self._send(200, data)
 
