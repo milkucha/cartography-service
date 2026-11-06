@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -44,8 +45,11 @@ def build_parser():
     )
     parser.add_argument(
         "--db",
-        default=os.environ.get("TOPOGRAPHY_DB", "map_store.db"),
-        help="SQLite cold-store path (default: map_store.db)",
+        default=os.environ.get("TOPOGRAPHY_DB"),
+        help=(
+            "SQLite cold-store path (default: maps/<level>-<worldid>.db next to this file, one "
+            "database per world so caches and seen-chunk ledgers never mix between worlds)"
+        ),
     )
     parser.add_argument(
         "--preload",
@@ -60,6 +64,22 @@ def build_parser():
         help="Max chunks to preload, 0 = unlimited",
     )
     return parser
+
+
+def default_db_path(chunk_loader) -> str:
+    """One database per world: ``maps/<level name>-<world id>.db``.
+
+    The world id (region dir + seed) is stable for a given save, so switching the
+    ``--world`` argument between runs switches databases instead of wiping or
+    reusing another world's chunk cache and per-agent "seen" ledger.
+    Falls back to the legacy ``map_store.db`` when there is no readable save.
+    """
+    world_id = chunk_loader.world_id() if getattr(chunk_loader, "available", False) else None
+    if not world_id:
+        return "map_store.db"
+    level = chunk_loader.region_dir.parent.name or "world"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", level).strip("._") or "world"
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps", f"{slug[:40]}-{world_id[:8]}.db")
 
 
 def preload(store, limit: int = 0):
@@ -98,7 +118,9 @@ def main(argv=None):
             args.world,
         )
 
-    store = map_store.MapStore(args.db, chunk_loader)
+    db_path = args.db or default_db_path(chunk_loader)
+    log.info("Map database: %s", db_path)
+    store = map_store.MapStore(db_path, chunk_loader)
     store.start_flush_thread()
 
     if args.preload:
