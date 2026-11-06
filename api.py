@@ -7,6 +7,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import perception
 import topography
 
 log = logging.getLogger("topography.api")
@@ -14,6 +15,9 @@ log = logging.getLogger("topography.api")
 MAX_RADIUS = 256
 MAX_LINE_LENGTH = 4096
 MAX_BODY_BYTES = 1_000_000
+MAX_PERCEPTION_SIZE = 32
+MAX_PERCEPTION_CHUNKS = 1024
+DEFAULT_PERCEPTION_SIZE = 16
 
 
 class TopographyAPI:
@@ -61,6 +65,8 @@ class TopographyAPI:
                 try:
                     if parsed.path in ("/", "/health"):
                         return self._health()
+                    if parsed.path == "/perception":
+                        return self._perception(params)
                     if parsed.path == "/topography":
                         return self._topography(params)
                     if parsed.path == "/area_composition":
@@ -110,6 +116,23 @@ class TopographyAPI:
                 }
                 health.update(store.stats())
                 self._send(200, health)
+
+            def _perception(self, params):
+                x = _int_param(params, "x")
+                z = _int_param(params, "z")
+                size_chunks = _size_param(
+                    params, "size_chunks", DEFAULT_PERCEPTION_SIZE, MAX_PERCEPTION_SIZE
+                )
+                if size_chunks * size_chunks > MAX_PERCEPTION_CHUNKS:
+                    raise ValueError(
+                        f"Perception window too large ({size_chunks * size_chunks} chunks); "
+                        f"max {MAX_PERCEPTION_CHUNKS}"
+                    )
+                materials = _bool_param(params, "materials", default=False)
+                result = perception.build_perception(
+                    store, x, z, size_chunks, materials=materials
+                )
+                self._send(200, result)
 
             def _topography(self, params):
                 x1 = _int_param(params, "x1")
@@ -207,3 +230,28 @@ def _radius_param(params, default=32):
     if radius < 1 or radius > MAX_RADIUS:
         raise ValueError(f"Parameter 'radius' must be between 1 and {MAX_RADIUS}")
     return radius
+
+
+def _size_param(params, name, default, maximum):
+    values = params.get(name)
+    if not values:
+        return default
+    try:
+        size = int(float(values[0]))
+    except (TypeError, ValueError):
+        raise ValueError(f"Parameter '{name}' must be a number")
+    if size < 1 or size > maximum:
+        raise ValueError(f"Parameter '{name}' must be between 1 and {maximum}")
+    return size
+
+
+def _bool_param(params, name, default=False):
+    values = params.get(name)
+    if not values:
+        return default
+    raw = str(values[0]).strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"Parameter '{name}' must be 0 or 1")
