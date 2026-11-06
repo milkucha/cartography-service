@@ -1,11 +1,20 @@
 """Tiered terrain map store.
 
-Hot   - chunks in the currently requested render-distance window (in memory)
-Warm  - recently visited chunks, LRU (in memory)
+Hot   - chunks in the most recent perception window (in memory, window-driven)
+Warm  - recently queried/loaded chunks outside the window, LRU (in memory)
 Cold  - every chunk ever loaded or updated, persisted to SQLite
 
 The hot and warm tiers are pure caches; correctness always falls back to
 SQLite, then to the base-state loader reading the world save.
+
+Tier rules:
+  * ``touch_window`` makes exactly the requested window hot and demotes any
+    hot chunk that left the window into warm.
+  * Detailed queries (``get_chunk``/``get_or_load``) promote to warm only,
+    unless the chunk is already hot.
+  * Diffs update a resident chunk in place (hot stays hot, warm stays warm);
+    a non-resident chunk is loaded and stored in warm. Diffs never promote.
+  * ``put_chunk`` (preload) stores in warm, never hot.
 """
 
 from __future__ import annotations
@@ -22,6 +31,8 @@ import mc_blocks
 
 log = logging.getLogger("topography.store")
 
+MAX_PERCEPTION_CHUNKS = 1024
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
     cx INTEGER NOT NULL,
@@ -35,7 +46,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 
 class MapStore:
-    def __init__(self, db_path: str, loader, hot_limit: int = 2048, warm_limit: int = 500):
+    def __init__(self, db_path: str, loader, hot_limit: int = 2048, warm_limit: int = 2048):
         self.loader = loader
         self.hot_limit = hot_limit
         self.warm_limit = warm_limit
@@ -43,6 +54,7 @@ class MapStore:
         self._hot: OrderedDict[tuple[int, int], dict] = OrderedDict()
         self._warm: OrderedDict[tuple[int, int], dict] = OrderedDict()
         self._dirty: dict[tuple[int, int], dict] = {}
+        self._generation = 0
         self._stop = threading.Event()
         self._flush_thread: threading.Thread | None = None
 
@@ -52,12 +64,21 @@ class MapStore:
         self._conn.execute(SCHEMA)
         self._conn.commit()
 
+    @property
+    def generation(self) -> int:
+        """Monotonic counter incremented whenever a diff is applied."""
+        with self._lock:
+            return self._generation
+
     # ------------------------------------------------------------------ tiers
     def _remember_hot(self, key: tuple[int, int], data: dict):
+        """Mark ``key`` hot. Hot and warm are kept disjoint."""
+        self._warm.pop(key, None)
         self._hot[key] = data
         self._hot.move_to_end(key)
         while len(self._hot) > self.hot_limit:
-            self._hot.popitem(last=False)
+            old_key, old_data = self._hot.popitem(last=False)
+            self._remember_warm(old_key, old_data)
 
     def _remember_warm(self, key: tuple[int, int], data: dict):
         self._warm[key] = data
@@ -82,39 +103,115 @@ class MapStore:
             "source": "cold",
         }
 
-    def get_chunk(self, cx: int, cz: int):
+    def _get_data(self, cx: int, cz: int, include_save: bool = True):
+        """Read hot -> warm -> cold -> save without promoting anything."""
         key = (int(cx), int(cz))
         with self._lock:
             data = self._hot.get(key)
             if data is not None:
-                self._hot.move_to_end(key)
+                return data
+            data = self._warm.get(key)
+            if data is not None:
+                return data
+            data = self._read_cold(key[0], key[1])
+            if data is not None:
+                return data
+        if include_save and self.loader is not None:
+            return self.loader.load_chunk(key[0], key[1])
+        return None
+
+    def get_chunk(self, cx: int, cz: int):
+        """Detailed read path: promote to warm, never to hot."""
+        key = (int(cx), int(cz))
+        with self._lock:
+            data = self._hot.get(key)
+            if data is not None:
                 return data
             data = self._warm.get(key)
             if data is not None:
                 self._warm.move_to_end(key)
-                self._remember_hot(key, data)
                 return data
-            data = self._read_cold(*key)
+            data = self._read_cold(key[0], key[1])
             if data is not None:
                 self._remember_warm(key, data)
-                self._remember_hot(key, data)
             return data
 
     def get_or_load(self, cx: int, cz: int):
-        data = self.get_chunk(cx, cz)
-        if data is not None:
-            return data
+        """Detailed read path: promote to warm, loading the save on a miss."""
+        key = (int(cx), int(cz))
+        with self._lock:
+            data = self._hot.get(key)
+            if data is not None:
+                return data
+            data = self._warm.get(key)
+            if data is not None:
+                self._warm.move_to_end(key)
+                return data
+            data = self._read_cold(key[0], key[1])
+            if data is not None:
+                self._remember_warm(key, data)
+                return data
         if self.loader is None:
             return None
-        data = self.loader.load_chunk(cx, cz)
+        data = self.loader.load_chunk(key[0], key[1])
         if data is None:
             return None
         with self._lock:
             data["source"] = "base"
-            self._remember_warm((cx, cz), data)
-            self._remember_hot((cx, cz), data)
-            self._dirty[(cx, cz)] = data
+            self._remember_warm(key, data)
+            self._dirty[key] = data
         return data
+
+    def touch_window(self, center_cx: int, center_cz: int, size_chunks: int):
+        """Load a square window and make exactly those chunks hot.
+
+        Returns ``(records, missing)`` where ``records`` is row-major
+        (north-to-south, then west-to-east). Chunks outside the new window
+        that were hot are demoted into warm.
+        """
+        size = int(size_chunks)
+        if size < 1:
+            raise ValueError("size_chunks must be positive")
+        if size * size > MAX_PERCEPTION_CHUNKS:
+            raise ValueError(
+                f"Window too large ({size}x{size} chunks); "
+                f"max {MAX_PERCEPTION_CHUNKS} chunks"
+            )
+        ccx, ccz = int(center_cx), int(center_cz)
+        half = size // 2
+        cx1 = ccx - half
+        cx2 = cx1 + size - 1
+        cz1 = ccz - half
+        cz2 = cz1 + size - 1
+
+        keys = [
+            (cx, cz)
+            for cz in range(cz1, cz2 + 1)
+            for cx in range(cx1, cx2 + 1)
+        ]
+        loaded: dict[tuple[int, int], dict] = {}
+        missing = 0
+        for key in keys:
+            data = self._get_data(key[0], key[1])
+            if data is None:
+                missing += 1
+            else:
+                loaded[key] = data
+
+        window_keys = set(keys)
+        with self._lock:
+            for key in list(self._hot.keys()):
+                if key not in window_keys:
+                    data = self._hot.pop(key)
+                    self._remember_warm(key, data)
+            for key in keys:
+                data = loaded.get(key)
+                if data is None:
+                    continue
+                self._remember_hot(key, data)
+
+        records = [loaded[key] for key in keys if key in loaded]
+        return records, missing
 
     def get_window(self, center_cx: int, center_cz: int, radius_chunks: int):
         """Load and return chunks within a square chunk window."""
@@ -135,40 +232,38 @@ class MapStore:
 
     # --------------------------------------------------------------- mutation
     def put_chunk(self, data: dict):
+        """Preload path: store in warm + dirty. Never introduces a hot chunk."""
         key = (int(data["cx"]), int(data["cz"]))
         with self._lock:
-            self._remember_hot(key, data)
-            self._remember_warm(key, data)
+            if key in self._hot:
+                self._hot[key] = data
+            else:
+                self._remember_warm(key, data)
             self._dirty[key] = data
 
-    def _ensure_chunk(self, cx: int, cz: int):
-        data = self.get_chunk(cx, cz)
-        if data is not None:
-            return data
-        data = self.loader.load_chunk(cx, cz) if self.loader is not None else None
-        if data is None:
-            data = {
-                "cx": cx,
-                "cz": cz,
-                "surface": {
-                    "y": [None] * 256,
-                    "materials": [None] * 256,
-                    "ground_y": [None] * 256,
-                    "ground_materials": [None] * 256,
-                    "water": [False] * 256,
-                },
-                "composition": {
-                    "counts": {"natural": 0, "engineered": 0, "unknown": 0, "liquid": 0, "air": 0},
-                    "top_blocks": [],
-                    "strong_indicators": [],
-                    "strong_indicator_count": 0,
-                    "dominant_biome": None,
-                    "artificiality_score": 0.0,
-                    "surface_min_y": None,
-                },
-                "source": "diff",
-            }
-        return data
+    @staticmethod
+    def _blank_chunk(cx: int, cz: int) -> dict:
+        return {
+            "cx": cx,
+            "cz": cz,
+            "surface": {
+                "y": [None] * 256,
+                "materials": [None] * 256,
+                "ground_y": [None] * 256,
+                "ground_materials": [None] * 256,
+                "water": [False] * 256,
+            },
+            "composition": {
+                "counts": {"natural": 0, "engineered": 0, "unknown": 0, "liquid": 0, "air": 0},
+                "top_blocks": [],
+                "strong_indicators": [],
+                "strong_indicator_count": 0,
+                "dominant_biome": None,
+                "artificiality_score": 0.0,
+                "surface_min_y": None,
+            },
+            "source": "diff",
+        }
 
     def apply_diff(self, delta: dict):
         """Apply one block change. Returns False if the delta is unusable."""
@@ -184,17 +279,42 @@ class MapStore:
             return False
         if action in ("chunk_load", "chunk_unload"):
             return True
+        if action == "place" and block_name is None:
+            return False
 
         cx, cz = x // 16, z // 16
+        key = (cx, cz)
         index = (x % 16) + (z % 16) * 16
+
         with self._lock:
-            data = self._ensure_chunk(cx, cz)
+            data = self._hot.get(key)
+            tier = "hot" if data is not None else None
+            if data is None:
+                data = self._warm.get(key)
+                if data is not None:
+                    tier = "warm"
+            if data is None:
+                data = self._read_cold(cx, cz)
+                if data is not None:
+                    tier = "cold"
+        if data is None and self.loader is not None:
+            data = self.loader.load_chunk(cx, cz)
+            if data is not None:
+                tier = "base"
+        if data is None:
+            data = self._blank_chunk(cx, cz)
+            tier = None
+
+        with self._lock:
+            if key in self._hot:
+                data, tier = self._hot[key], "hot"
+            elif key in self._warm:
+                data, tier = self._warm[key], "warm"
+
             surface = data["surface"]
             old_material = surface["materials"][index]
 
             if action == "place":
-                if block_name is None:
-                    return False
                 if surface["y"][index] is None or y >= surface["y"][index]:
                     surface["y"][index] = y
                     surface["materials"][index] = block_name
@@ -235,9 +355,15 @@ class MapStore:
                     self._adjust_composition(data, broken_block, -1)
 
             data["source"] = "diff"
-            self._remember_hot((cx, cz), data)
-            self._remember_warm((cx, cz), data)
-            self._dirty[(cx, cz)] = data
+            if tier == "hot":
+                self._hot[key] = data
+            elif tier == "warm":
+                self._warm[key] = data
+                self._warm.move_to_end(key)
+            else:
+                self._remember_warm(key, data)
+            self._dirty[key] = data
+            self._generation += 1
         return True
 
     def _adjust_composition(self, data: dict, block_name: str, amount: int):
@@ -315,6 +441,7 @@ class MapStore:
                 "warm_chunks": len(self._warm),
                 "cold_chunks": cold,
                 "dirty_chunks": len(self._dirty),
+                "generation": self._generation,
             }
 
 

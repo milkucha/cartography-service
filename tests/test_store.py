@@ -49,6 +49,88 @@ class MapStoreTests(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertEqual(missing, 7)
 
+    def test_warm_limit_defaults_to_2048(self):
+        self.assertEqual(self.store.warm_limit, 2048)
+
+    def test_touch_window_makes_window_hot_and_demotes_rest(self):
+        for cx in (0, 1):
+            for cz in (0, 1):
+                self.records[(cx, cz)] = helpers.make_record(cx, cz, height=64)
+        for cx in (4, 5):
+            for cz in (4, 5):
+                self.records[(cx, cz)] = helpers.make_record(cx, cz, height=70)
+
+        records, missing = self.store.touch_window(1, 1, 2)
+        self.assertEqual(missing, 0)
+        self.assertEqual(len(records), 4)
+        self.assertEqual(set(self.store._hot), {(0, 0), (1, 0), (0, 1), (1, 1)})
+        self.assertEqual(set(self.store._warm), set())
+
+        records, missing = self.store.touch_window(5, 5, 2)
+        self.assertEqual(missing, 0)
+        self.assertEqual(len(records), 4)
+        self.assertEqual(set(self.store._hot), {(4, 4), (5, 4), (4, 5), (5, 5)})
+        self.assertEqual(set(self.store._warm), {(0, 0), (1, 0), (0, 1), (1, 1)})
+
+    def test_touch_window_uses_asymmetric_size_bounds(self):
+        records, missing = self.store.touch_window(0, 0, 2)
+        self.assertEqual(missing, 3)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(set(self.store._hot), {(0, 0)})
+
+    def test_detailed_query_promotes_to_warm_not_hot(self):
+        data = self.store.get_or_load(0, 0)
+        self.assertIsNotNone(data)
+        self.assertIn((0, 0), self.store._warm)
+        self.assertNotIn((0, 0), self.store._hot)
+
+        self.store.touch_window(0, 0, 2)
+        self.assertIn((0, 0), self.store._hot)
+        self.store.get_chunk(0, 0)
+        self.assertIn((0, 0), self.store._hot)
+        self.assertNotIn((0, 0), self.store._warm)
+
+    def test_diff_updates_hot_without_promoting(self):
+        self.store.touch_window(0, 0, 2)
+        self.assertIn((0, 0), self.store._hot)
+        before = self.store.generation
+
+        accepted = self.store.apply_diff(
+            {
+                "action": "place",
+                "x": 3,
+                "y": 70,
+                "z": 4,
+                "block_name": "minecraft:oak_planks",
+            }
+        )
+        self.assertTrue(accepted)
+        self.assertIn((0, 0), self.store._hot)
+        self.assertNotIn((0, 0), self.store._warm)
+        self.assertEqual(self.store.generation, before + 1)
+        index = column_index(3, 4)
+        self.assertEqual(self.store._hot[(0, 0)]["surface"]["y"][index], 70)
+
+    def test_diff_on_absent_chunk_lands_in_warm(self):
+        accepted = self.store.apply_diff(
+            {
+                "action": "place",
+                "x": 20,
+                "y": 70,
+                "z": 4,
+                "block_name": "minecraft:cobblestone",
+            }
+        )
+        self.assertTrue(accepted)
+        self.assertIn((1, 0), self.store._warm)
+        self.assertNotIn((1, 0), self.store._hot)
+
+    def test_put_chunk_stores_warm_not_hot(self):
+        self.store.put_chunk(helpers.make_record(7, 7, height=70))
+        self.assertIn((7, 7), self.store._warm)
+        self.assertNotIn((7, 7), self.store._hot)
+        self.assertIn((7, 7), self.store._dirty)
+
     def test_place_updates_surface_and_composition(self):
         x, y, z = 3, 70, 4
         accepted = self.store.apply_diff(
@@ -142,6 +224,84 @@ class MapStoreTests(unittest.TestCase):
         self.assertFalse(
             self.store.apply_diff({"action": "place", "x": 0, "y": 0, "z": 0})
         )
+
+    def test_generation_increments_on_diffs(self):
+        self.assertEqual(self.store.generation, 0)
+
+        self.assertTrue(
+            self.store.apply_diff(
+                {
+                    "action": "place",
+                    "x": 2,
+                    "y": 72,
+                    "z": 2,
+                    "block_name": "minecraft:oak_planks",
+                }
+            )
+        )
+        self.assertEqual(self.store.generation, 1)
+
+        self.assertFalse(self.store.apply_diff({"action": "place"}))
+        self.assertEqual(self.store.generation, 1)
+
+        self.assertTrue(
+            self.store.apply_diff(
+                {"action": "chunk_load", "cx": 0, "cz": 0, "x": 0, "y": -64, "z": 0}
+            )
+        )
+        self.assertEqual(self.store.generation, 1)
+
+        self.assertTrue(
+            self.store.apply_diff(
+                {
+                    "action": "break",
+                    "x": 2,
+                    "y": 72,
+                    "z": 2,
+                    "block_name": "minecraft:oak_planks",
+                    "new_top_y": 64,
+                    "new_top_block": "minecraft:grass_block",
+                }
+            )
+        )
+        self.assertEqual(self.store.generation, 2)
+        self.assertEqual(self.store.stats()["generation"], 2)
+
+    def test_warm_eviction_leaves_data_readable_from_cold(self):
+        self.store.warm_limit = 1
+        self.assertTrue(
+            self.store.apply_diff(
+                {
+                    "action": "place",
+                    "x": 2,
+                    "y": 72,
+                    "z": 2,
+                    "block_name": "minecraft:oak_planks",
+                }
+            )
+        )
+        self.assertGreaterEqual(self.store.flush(), 1)
+        self.assertIn((0, 0), self.store._warm)
+
+        self.assertTrue(
+            self.store.apply_diff(
+                {
+                    "action": "place",
+                    "x": 20,
+                    "y": 70,
+                    "z": 4,
+                    "block_name": "minecraft:cobblestone",
+                }
+            )
+        )
+        self.assertNotIn((0, 0), self.store._warm)
+
+        data = self.store.get_chunk(0, 0)
+        self.assertIsNotNone(data)
+        self.assertEqual(data["source"], "cold")
+        index = column_index(2, 2)
+        self.assertEqual(data["surface"]["y"][index], 72)
+        self.assertEqual(data["surface"]["materials"][index], "minecraft:oak_planks")
 
     def test_dirty_chunks_are_persisted_and_recalled_cold(self):
         self.store.apply_diff(
