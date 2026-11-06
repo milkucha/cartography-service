@@ -124,6 +124,7 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
     for level in lod_levels(cx1, cz1, size_chunks):
         levels.append(_build_level(level, records, materials))
 
+    extents = _extents(records)
     composition, biome = _composition_summary(records)
     updated_at = max(
         (float(record.get("updated_at") or 0.0) for record in records.values()),
@@ -139,8 +140,8 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
         "window": {"cx1": cx1, "cz1": cz1, "cx2": cx2, "cz2": cz2},
         "resolution": "lod",
         "lod": levels,
-        "surface": _surface_summary(records),
-        "terrain": _terrain_summary(records, x, z),
+        "surface": _surface_summary(records, extents),
+        "terrain": _terrain_summary(records, x, z, extents),
         "water": _water_summary(records, x, z),
         "biome": biome,
         "composition": composition,
@@ -251,49 +252,60 @@ def terrain_arrays(surface):
     return ys, mats
 
 
-def _terrain_relief(records):
+def _chunk_extent(surface):
+    """(dry_lo, dry_hi, any_lo, any_hi) of terrain height for one chunk."""
+    ys, _ = terrain_arrays(surface)
+    water = surface.get("water") or []
+    known = [y for y in ys if y is not None]
+    if not known:
+        return None
+    any_lo, any_hi = min(known), max(known)
+    if not any(water):
+        return any_lo, any_hi, any_lo, any_hi
+    dry = [y for y, w in zip(ys, water) if y is not None and not w]
+    if len(dry) < len(known) and len(water) < len(ys):  # ragged: be conservative
+        dry = known
+    if not dry:
+        return None, None, any_lo, any_hi
+    return min(dry), max(dry), any_lo, any_hi
+
+
+def _extents(records):
+    return {key: _chunk_extent(rec.get("surface") or {}) for key, rec in records.items()}
+
+
+def _terrain_relief(extents):
     """max-min of leaf-free terrain height over dry columns (None if unknown)."""
-    lo = hi = None
-    wet_lo = wet_hi = None
-    for record in records.values():
-        surface = record.get("surface") or {}
-        ys, _ = terrain_arrays(surface)
-        water = surface.get("water") or []
-        nwater = len(water)
-        for index, y in enumerate(ys):
-            if y is None:
-                continue
-            if wet_lo is None or y < wet_lo:
-                wet_lo = y
-            if wet_hi is None or y > wet_hi:
-                wet_hi = y
-            if index < nwater and water[index]:
-                continue
-            if lo is None or y < lo:
-                lo = y
-            if hi is None or y > hi:
-                hi = y
-    if lo is None:
-        lo, hi = wet_lo, wet_hi
-    return None if lo is None else hi - lo
+    dry = [e for e in extents.values() if e and e[0] is not None]
+    if dry:
+        return max(e[1] for e in dry) - min(e[0] for e in dry)
+    wet = [e for e in extents.values() if e]
+    if wet:
+        return max(e[3] for e in wet) - min(e[2] for e in wet)
+    return None
 
 
-def _surface_summary(records):
-    heights = []
+def _surface_summary(records, extents=None):
+    total = 0
+    count = 0
+    min_y = max_y = None
     for record in records.values():
         surface = record.get("surface") or {}
-        for y in surface.get("y") or []:
-            if y is not None:
-                heights.append(y)
-    if not heights:
+        ys = [y for y in surface.get("y") or [] if y is not None]
+        if not ys:
+            continue
+        total += sum(ys)
+        count += len(ys)
+        lo, hi = min(ys), max(ys)
+        min_y = lo if min_y is None or lo < min_y else min_y
+        max_y = hi if max_y is None or hi > max_y else max_y
+    if not count:
         return {"min_y": None, "max_y": None, "avg_y": None, "relief": None}
-    min_y = min(heights)
-    max_y = max(heights)
-    relief = _terrain_relief(records)
+    relief = _terrain_relief(extents if extents is not None else _extents(records))
     return {
         "min_y": min_y,
         "max_y": max_y,
-        "avg_y": round(sum(heights) / len(heights), 1),
+        "avg_y": round(total / count, 1),
         "relief": relief if relief is not None else max_y - min_y,
     }
 
@@ -307,7 +319,7 @@ def _direction_cached(dx, dz):
     return _direction(dx, dz)
 
 
-def _terrain_summary(records, x, z):
+def _terrain_summary(records, x, z, extents=None):
     """Summarise leaf-free dry ground: peak, low point, and per-direction peaks.
 
     Uses ``terrain_y`` (canopy-free). Chunks are visited nearest-first and
@@ -317,24 +329,21 @@ def _terrain_summary(records, x, z):
     lowest = None
     best_dir = {}  # direction -> (y, dx, dz)
 
+    if extents is None:
+        extents = _extents(records)
     prepared = []
     for (cx, cz), record in records.items():
+        extent = extents.get((cx, cz))
+        if not extent or extent[0] is None:
+            continue
         surface = record.get("surface") or {}
         ys, mats = terrain_arrays(surface)
-        if not ys:
-            continue
         water = surface.get("water") or []
-        has_water = any(water)
-        known = [
-            ys[i] for i in range(min(len(ys), 256))
-            if ys[i] is not None and not (has_water and i < len(water) and water[i])
-        ]
-        if not known:
-            continue
         bx = cx * 16 - x
         bz = cz * 16 - z
         near = (bx + 7.5) ** 2 + (bz + 7.5) ** 2
-        prepared.append((near, bx, bz, max(known), min(known), ys, mats, water if has_water else None))
+        has_water = extent[2] != extent[0] or extent[3] != extent[1] or any(water)
+        prepared.append((near, bx, bz, extent[1], extent[0], ys, mats, water if has_water else None))
     prepared.sort(key=lambda item: item[0])
 
     n_dirs = 8
@@ -369,8 +378,8 @@ def _terrain_summary(records, x, z):
             previous = best_dir.get(direction)
             if previous is None or y > previous[0]:
                 best_dir[direction] = (y, dx, dz)
-            if thr is not None and len(best_dir) >= n_dirs:
-                thr = min(v[0] for v in best_dir.values())
+                if len(best_dir) >= n_dirs:
+                    thr = min(v[0] for v in best_dir.values())
 
     def entry(item):
         y, dx, dz, material = item
@@ -397,7 +406,7 @@ def _terrain_summary(records, x, z):
         "highest": entry(highest) if highest else None,
         "lowest": entry(lowest) if lowest else None,
         "highest_by_direction": by_direction,
-        "relief": _terrain_relief(records),
+        "relief": _terrain_relief(extents),
     }
 
 
