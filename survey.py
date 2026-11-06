@@ -225,7 +225,7 @@ def _find_wells(records, feats):
 def _find_bridges(records, feats, mask_cols):
     cand = {}
     for key, f in feats.items():
-        for x, z, y, m in f["cand"]:
+        for x, z, y, m, _t in f["cand"]:
             if (x, z) not in mask_cols:
                 cand[(x, z)] = y
 

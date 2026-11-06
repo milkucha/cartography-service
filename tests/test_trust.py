@@ -257,6 +257,9 @@ class DiffCorrectnessTests(StoreCase):
         s = self.surf()
         self.assertEqual(s["y"][idx(1, 1)], 71)
         self.assertEqual(s["terrain_y"][idx(1, 1)], 70)
+        self.assertEqual(s["terrain_y"][idx(2, 2)], 70)  # planks are not natural ground
+        self.store.apply_diff({"action": "place", "x": 2, "y": 71, "z": 2, "block_name": "minecraft:stone"})
+        s = self.surf()
         self.assertEqual(s["terrain_y"][idx(2, 2)], 71)
         self.assertTrue(terrain_rules.is_ground(s["terrain_materials"][idx(2, 2)]))
 
@@ -408,6 +411,5 @@ class TerrainRulesDecorationTests(unittest.TestCase):
                      "minecraft:oak_sign", "minecraft:stone_button", "minecraft:redstone_wire",
                      "minecraft:oak_leaves", "minecraft:water"):
             self.assertFalse(terrain_rules.is_ground(name), name)
-        for name in ("minecraft:stone", "minecraft:oak_log", "minecraft:oak_planks",
-                     "minecraft:grass_block"):
+        for name in ("minecraft:stone", "minecraft:dirt", "minecraft:grass_block"):
             self.assertTrue(terrain_rules.is_ground(name), name)

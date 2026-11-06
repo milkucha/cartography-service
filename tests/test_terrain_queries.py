@@ -100,8 +100,10 @@ class LeafFreeTerrainTests(TerrainBase):
         self.assertEqual(col["terrain_y"], FLAT_Y)
         self.assertEqual(col["terrain_materials"], helpers.GRASS)
 
-    def test_trunk_counts_as_ground(self):
-        self.assertEqual(self.col(10, 10)["terrain_y"], 74)
+    def test_trunk_is_not_ground(self):
+        col = self.col(10, 10)  # logs 71..74 on grass at 70
+        self.assertEqual(col["terrain_y"], FLAT_Y)
+        self.assertEqual(col["terrain_materials"], helpers.GRASS)
 
     def test_water_bed(self):
         col = self.col(22, 40)

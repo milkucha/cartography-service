@@ -17,7 +17,8 @@ MAX_FLAT_RADIUS = 128
 MAX_FOOTPRINT = 64
 MAX_FLAT_RESULTS = 5
 WATER_TOLERANCE = 0.02
-# Surface this far above terrain (and dry) means a canopy/structure is in the way.
+# Surface this far above (natural) terrain and dry means a canopy/structure is in the way;
+# a built surface (roof, deck) above terrain blocks regardless of height.
 OBSTRUCTION_HEIGHT = 2
 
 MAX_BRIDGE_WALK = 128
@@ -166,6 +167,7 @@ def flat_areas(store, center_x, center_z, radius=64, width=9, depth=9, max_delta
             surface = data["surface"]
             ty, tm = perception.terrain_arrays(surface)
             sy = surface["y"]
+            smat = surface["materials"]
             water = surface["water"]
             for z in range(max(z1, cz * 16), min(z2, cz * 16 + 15) + 1):
                 r = z - z1
@@ -183,7 +185,11 @@ def flat_areas(store, center_x, center_z, radius=64, width=9, depth=9, max_delta
                         hard[r][c] = 1
                     if water[idx]:
                         wet[r][c] = 1
-                    elif sy[idx] is not None and sy[idx] > t + OBSTRUCTION_HEIGHT:
+                    elif sy[idx] is not None and (
+                        sy[idx] > t + OBSTRUCTION_HEIGHT
+                        # a built surface above natural ground (roof, deck, floor)
+                        or (sy[idx] > t and _is_engineered(smat[idx]))
+                    ):
                         blocked[r][c] = 1
 
     sat_hard = _summed_area(hard)

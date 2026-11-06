@@ -47,10 +47,12 @@ log = logging.getLogger("topography.store")
 MAX_PERCEPTION_CHUNKS = 1024
 
 # v2: chunks.save_ts / loaded_at, meta table, surface.terrain_y/terrain_materials.
-# v3: adds the per-agent ``seen`` ledger table. The chunks layout is unchanged from v2, so a
-# v2 database is migrated in place (chunk rows are kept).
-SCHEMA_VERSION = 3
-CHUNKS_MIN_VERSION = 2
+# v3: adds the per-agent ``seen`` ledger table. The chunks layout is unchanged from v2.
+# v4: ``terrain_y`` now means natural ground only (roofs/floors/decks are skipped), so chunk
+# rows written by v2/v3 hold wrong terrain and are dropped to be recomputed. Only the
+# ``chunks`` table is discarded; ``seen`` and ``meta`` survive.
+SCHEMA_VERSION = 4
+CHUNKS_MIN_VERSION = 4
 MAX_SEEN_PER_CALL = 5000
 
 SCHEMA = """
@@ -603,7 +605,7 @@ class MapStore:
             surface["ground_y"][index] = y - 1
             surface["ground_materials"][index] = None
 
-        # Terrain (topmost is_ground block).
+        # Terrain (topmost natural-ground block; non-ground placements/breaks never move it).
         terrain = surface["terrain_y"][index]
         if has_terrain_hint:
             t_y = delta.get("new_terrain_y")

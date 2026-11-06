@@ -1,56 +1,50 @@
 """Shared definition of "terrain ground" used by every writer of ``terrain_y``.
 
 ``terrain_y`` / ``terrain_materials`` (per-column, 256 entries per chunk) are the
-height and block of the topmost *solid, non-liquid, non-vegetation, non-leaf* block.
-Tree canopies, plants, snow layers and water are skipped, so under a forest this
-is the forest floor, and under water it is the bed. Logs/planks/etc. count as
-ground (a trunk or a roof is an obstacle, not nothing).
+height and block of the topmost NATURAL GROUND-FORMING block. The scan goes down
+from the top of the column and skips everything that is not on the whitelist:
+roofs, floors, bridge decks, walls, logs, leaves, plants, liquids, decoration.
+So under a plank roof it is the grass below, under a tree it is the dirt, and
+under water or a bridge deck it is the bed.
+
+Whitelist = :data:`GROUND_EXACT` plus the name rules (``*_ore``, ``*_terracotta``
+except glazed). ``dirt_path`` and ``farmland`` are included although a player
+makes them: they replace the top dirt/grass block, so they sit exactly at
+natural ground level. Known limitation: stone-family blocks (stone, granite,
+deepslate, ...) that a player placed as a pillar or floor still count, and a
+natural overhang counts as terrain (no air-gap/cave detection). A column with no
+whitelisted block at all (e.g. a floating build over the void) has no terrain.
 
 Both the save loader (``loader.decode_surface``) and the live diff/snapshot path
-(``map_store``) must classify blocks through :func:`is_ground`.
+(``map_store``) classify blocks through :func:`is_ground`. The Java plugin
+(``ColumnSurface.isGroundId``) implements the SAME list - keep in sync;
+``tools/check_terrain_rules_sync.py`` verifies it.
 """
 
 from __future__ import annotations
 
-import mc_blocks
-
-_VEGETATION = {
-    "kelp", "kelp_plant", "seagrass", "tall_seagrass", "sea_pickle", "lily_pad",
-    "short_grass", "grass", "tall_grass", "fern", "large_fern", "dead_bush",
-    "sugar_cane", "bamboo", "cactus", "snow", "vine", "glow_lichen", "sculk_vein",
-    "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet", "red_tulip",
-    "orange_tulip", "white_tulip", "pink_tulip", "oxeye_daisy", "cornflower",
-    "lily_of_the_valley", "wither_rose", "torchflower", "sunflower", "lilac",
-    "rose_bush", "peony", "pink_petals", "spore_blossom", "hanging_roots",
-    "brown_mushroom", "red_mushroom", "sweet_berry_bush", "fire", "soul_fire",
-    "light", "structure_void", "moving_piston",
-}
-# Floor/wall decoration that sits ON the ground (or hangs from it) and must not
-# raise the terrain height. Matched by name suffix; the Java snapshot code in
-# topography-plugin (ColumnSurface.isGroundId) implements the SAME list - keep in sync.
-DECORATION_SUFFIXES = (
-    "rail", "torch", "sign", "banner", "button", "pressure_plate",
+GROUND_EXACT_NAMES = (
+    "grass_block", "dirt", "coarse_dirt", "rooted_dirt", "podzol", "mycelium",
+    "dirt_path", "farmland", "mud", "clay", "sand", "red_sand", "gravel",
+    "sandstone", "red_sandstone", "snow_block", "powder_snow",
+    "ice", "packed_ice", "blue_ice",
+    "stone", "granite", "diorite", "andesite", "tuff", "calcite", "deepslate",
+    "dripstone_block", "basalt", "blackstone", "netherrack", "end_stone",
+    "bedrock", "terracotta", "moss_block", "ancient_debris", "obsidian",
+    "soul_sand", "soul_soil", "crimson_nylium", "warped_nylium",
 )
-DECORATION_EXACT = {
-    "minecraft:redstone_wire", "minecraft:lever", "minecraft:tripwire",
-    "minecraft:tripwire_hook", "minecraft:repeater", "minecraft:comparator",
-    "minecraft:ladder", "minecraft:string",
-}
-
-NON_GROUND = (
-    {f"minecraft:{n}" for n in _VEGETATION}
-    | set(mc_blocks.AIR)
-    | set(mc_blocks.LIQUID)
-)
+GROUND_EXACT = frozenset(f"minecraft:{n}" for n in GROUND_EXACT_NAMES)
+# Name rules (checked on the full id).
+GROUND_SUFFIXES = ("_ore", "_terracotta")
+GROUND_SUFFIX_EXCLUDED = ("glazed_terracotta",)
 
 
 def is_ground(name: str | None) -> bool:
-    """True when ``name`` is a block that counts as terrain ground."""
+    """True when ``name`` is a natural ground-forming block (terrain)."""
     if not name:
         return False
-    return (
-        name not in NON_GROUND
-        and name not in DECORATION_EXACT
-        and not name.endswith("_leaves")
-        and not name.endswith(DECORATION_SUFFIXES)
-    )
+    if name in GROUND_EXACT:
+        return True
+    if name.endswith(GROUND_SUFFIX_EXCLUDED):
+        return False
+    return name.endswith(GROUND_SUFFIXES)

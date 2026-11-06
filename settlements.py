@@ -1,12 +1,13 @@
 """Settlement detection from cached surface data (no section reads).
 
-Chunk records carry ``terrain_y`` which already counts roofs/logs/planks as ground, so a
-building is NOT "surface above terrain_y". Instead a column is a *structure* column when
+Chunk records carry ``terrain_y``, the height of the natural ground under each column
+(roofs, floors and decks are skipped by ``terrain_rules``). A column is a *structure* column when
 
   * its surface material is a built material (planks, stairs, slabs, bricks, wool, concrete,
     glass, cobblestone, logs ...; natural ground/leaves/vegetation never qualify), and
-  * its ground level sits at least 2 blocks above the local baseline (an erosion = minimum
-    of the surrounding ground over about +-10 blocks, water counted at its surface).
+  * its surface sits at least 2 blocks above its own ``terrain_y`` (building height =
+    ``y - terrain_y``). Only rows without ``terrain_y`` (legacy) fall back to a local
+    baseline (an erosion = minimum of the surrounding ground over about +-10 blocks).
 
 Structure columns are grouped into buildings (connected components, 8-neighbour with a small
 gap tolerance); trees (small log-only components), thin strips and sparse scatter are
@@ -104,6 +105,7 @@ _FEAT_LIMIT = 6000
 
 
 def _terrain(surface):
+    """Per-column natural ground height (``ground_y`` for rows without terrain_y)."""
     ty = surface.get("terrain_y")
     return ty if ty is not None else surface["ground_y"]
 
@@ -116,7 +118,7 @@ def _features(rec, gen):
     surf = rec["surface"]
     mats = surf["materials"]
     ys = surf["y"]
-    tys = _terrain(surf)
+    tys = surf.get("terrain_y") or [None] * 256
     uniq = set(mats)
     built = {m for m in uniq if m and material_kind(m)}
     cx0, cz0 = rec["cx"] * 16, rec["cz"] * 16
@@ -127,7 +129,7 @@ def _features(rec, gen):
                 y = ys[i]
                 if y is None:
                     continue
-                cand.append((cx0 + (i & 15), cz0 + (i >> 4), y, m))
+                cand.append((cx0 + (i & 15), cz0 + (i >> 4), y, m, tys[i]))
     paths = []
     if "minecraft:dirt_path" in uniq:
         paths = [(cx0 + (i & 15), cz0 + (i >> 4)) for i, m in enumerate(mats)
@@ -207,12 +209,48 @@ def detect_buildings(records, gen=0):
             cell_memo[(ci, cj)] = v
         return v
 
+    cand_cols = {(x, z) for f in feats.values() for x, z, _y, _m, _t in f["cand"]}
+
+    def water_level(x, z):
+        """Surface y if (x, z) is a loaded water column, else None."""
+        f = feats.get((x >> 4, z >> 4))
+        if f is None:
+            return None
+        surf = f["rec"]["surface"]
+        i = (x & 15) + (z & 15) * 16
+        return surf["y"][i] if surf["water"][i] else None
+
+    def deck_level(x, z):
+        """Water surface under a built column that spans water (pier/bridge deck).
+
+        Terrain under such a column is the water bed, which would read as a very tall
+        building; the deck stands on the water, so measure from its surface instead.
+        """
+        for dx, dz in ((1, 0), (0, 1)):
+            levels = []
+            for sgn in (-1, 1):
+                lv = None
+                for k in range(1, 4):
+                    q = (x + sgn * dx * k, z + sgn * dz * k)
+                    if q in cand_cols:
+                        continue
+                    lv = water_level(*q)
+                    break
+                levels.append(lv)
+            if levels[0] is not None and levels[1] is not None:
+                return max(levels)
+        return None
+
     mask = {}
     for f in feats.values():
-        for x, z, y, m in f["cand"]:
-            base = baseline(x >> 2, z >> 2)
+        for x, z, y, m, ty in f["cand"]:
+            base = ty if ty is not None else baseline(x >> 2, z >> 2)
             if base >= BIG:
                 continue
+            if ty is not None and y - ty >= MIN_HEIGHT:
+                wl = deck_level(x, z)
+                if wl is not None and wl > base:
+                    base = wl
             h = y - base
             if h >= MIN_HEIGHT:
                 mask[(x, z)] = (h, m, base)

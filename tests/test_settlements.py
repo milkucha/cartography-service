@@ -195,19 +195,30 @@ class LedgerTests(unittest.TestCase):
         n = store.mark_seen("a", [[i, 0] for i in range(6000)])
         self.assertEqual(n, map_store.MAX_SEEN_PER_CALL)
 
-    def test_v2_database_migrates_without_losing_chunks(self):
-        conn = sqlite3.connect(self.path)
-        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
-        conn.execute("INSERT INTO meta VALUES ('schema_version', '2')")
-        conn.execute(map_store.SCHEMA)
-        conn.execute("INSERT INTO chunks VALUES (3, 4, '{}', '{}', 1.0, NULL, NULL)")
-        conn.commit()
-        conn.close()
-        store = map_store.MapStore(self.path, None)
-        self.addCleanup(store.stop)
-        self.assertEqual(store.discarded_cold, 0)
-        self.assertEqual(store.stats()["cold_chunks"], 1)
-        self.assertEqual(store.mark_seen("a", [[3, 4]]), 1)
+    def test_old_database_drops_chunks_but_keeps_seen(self):
+        for version in ("2", "3"):
+            Path(self.path).unlink(missing_ok=True)
+            conn = sqlite3.connect(self.path)
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute("INSERT INTO meta VALUES ('schema_version', ?)", (version,))
+            conn.execute(map_store.SCHEMA)
+            conn.execute(map_store.SEEN_SCHEMA)
+            conn.execute("INSERT INTO chunks VALUES (3, 4, '{}', '{}', 1.0, NULL, NULL)")
+            conn.commit()
+            conn.close()
+            seeded = map_store.MapStore(self.path, None)
+            seeded.mark_seen("a", [[3, 4]])
+            seeded.stop()
+            conn = sqlite3.connect(self.path)
+            conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (version,))
+            conn.execute("INSERT INTO chunks VALUES (3, 4, '{}', '{}', 1.0, NULL, NULL)")
+            conn.commit()
+            conn.close()
+            store = map_store.MapStore(self.path, None)
+            self.assertEqual(store.discarded_cold, 1, version)
+            self.assertEqual(store.stats()["cold_chunks"], 0)
+            self.assertTrue(store.is_seen("a", 3, 4), version)
+            store.stop()
 
 
 class GatingApiTests(unittest.TestCase):
