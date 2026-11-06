@@ -260,6 +260,25 @@ class ChunkLoader:
         record["save_ts"] = int(save_ts) if save_ts else None
         return record
 
+    def read_chunk_root(self, cx: int, cz: int):
+        """Raw NBT root of a fully generated chunk (or None). Used by /survey."""
+        if not self.available:
+            return None
+        self.index_regions()
+        handle = self._region_for(cx, cz)
+        if handle is None:
+            return None
+        try:
+            with self._io_lock:
+                handle.refresh_header()
+                root = handle.read_chunk_nbt(cx % 32, cz % 32)
+        except Exception as exc:
+            log.warning("Failed to read chunk (%s, %s): %s", cx, cz, exc)
+            return None
+        if not root or not is_full_status(root.get("Status")):
+            return None
+        return root
+
     def chunk_timestamp(self, cx: int, cz: int):
         """Region-header save time of a chunk (unix seconds) or None if absent.
 

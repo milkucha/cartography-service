@@ -47,7 +47,11 @@ log = logging.getLogger("topography.store")
 MAX_PERCEPTION_CHUNKS = 1024
 
 # v2: chunks.save_ts / loaded_at, meta table, surface.terrain_y/terrain_materials.
-SCHEMA_VERSION = 2
+# v3: adds the per-agent ``seen`` ledger table. The chunks layout is unchanged from v2, so a
+# v2 database is migrated in place (chunk rows are kept).
+SCHEMA_VERSION = 3
+CHUNKS_MIN_VERSION = 2
+MAX_SEEN_PER_CALL = 5000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -60,6 +64,17 @@ CREATE TABLE IF NOT EXISTS chunks (
     loaded_at REAL,
     PRIMARY KEY (cx, cz)
 );
+"""
+SEEN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS seen (
+    agent TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    cx INTEGER NOT NULL,
+    cz INTEGER NOT NULL,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    PRIMARY KEY (agent, dimension, cx, cz)
+)
 """
 META_SCHEMA = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
 
@@ -134,6 +149,7 @@ class MapStore:
         self._flush_thread: threading.Thread | None = None
         self.discarded_cold = 0
         self.reloaded_stale = 0
+        self._seen_cache: dict[tuple[str, str], set] = {}
 
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -165,8 +181,8 @@ class MapStore:
             except ValueError:
                 version = 0
             stored_world = meta.get("world_id")
-            if version < SCHEMA_VERSION:
-                reason = f"schema version {version} < {SCHEMA_VERSION}"
+            if version < CHUNKS_MIN_VERSION:
+                reason = f"schema version {version} < {CHUNKS_MIN_VERSION}"
             elif self.world_id and stored_world and stored_world != self.world_id:
                 reason = f"world changed ({stored_world} -> {self.world_id})"
         if reason:
@@ -175,6 +191,7 @@ class MapStore:
             conn.execute("DROP TABLE chunks")
             log.warning("Discarding %s cold chunk rows: %s", self.discarded_cold, reason)
         conn.execute(SCHEMA)
+        conn.execute(SEEN_SCHEMA)
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -723,6 +740,69 @@ class MapStore:
                     merged[str(name)] = max(0, int(value))
                 except (TypeError, ValueError):
                     continue
+
+    # ------------------------------------------------------------ seen ledger
+    def _seen_set(self, agent: str, dimension: str = OVERWORLD) -> set:
+        """Lazily loaded in-memory set of (cx, cz) the agent has seen."""
+        key = (str(agent), normalize_dimension(dimension))
+        with self._lock:
+            cached = self._seen_cache.get(key)
+            if cached is None:
+                rows = self._conn.execute(
+                    "SELECT cx, cz FROM seen WHERE agent=? AND dimension=?", key
+                ).fetchall()
+                cached = self._seen_cache[key] = {(r[0], r[1]) for r in rows}
+            return cached
+
+    def mark_seen(self, agent: str, chunks, dimension=None) -> int:
+        """Upsert chunks into the agent's ledger (at most 5000 per call)."""
+        dim = normalize_dimension(dimension)
+        clean = []
+        for item in chunks or []:
+            if len(clean) >= MAX_SEEN_PER_CALL:
+                break
+            try:
+                clean.append((int(item[0]), int(item[1])))
+            except (TypeError, ValueError, IndexError, KeyError):
+                continue
+        if not clean:
+            return 0
+        now = time.time()
+        agent = str(agent)
+        with self._lock:
+            seen = self._seen_set(agent, dim)
+            self._conn.executemany(
+                "INSERT INTO seen (agent, dimension, cx, cz, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(agent, dimension, cx, cz) DO UPDATE SET last_seen=excluded.last_seen",
+                [(agent, dim, cx, cz, now, now) for cx, cz in clean],
+            )
+            self._conn.commit()
+            seen.update(clean)
+        return len(clean)
+
+    def seen_filter(self, agent: str, chunk_keys, dimension=None) -> set:
+        """Return the subset of ``chunk_keys`` the agent has seen."""
+        seen = self._seen_set(agent, normalize_dimension(dimension))
+        return {k for k in chunk_keys if k in seen}
+
+    def is_seen(self, agent: str, cx: int, cz: int) -> bool:
+        return (cx, cz) in self._seen_set(agent)
+
+    def seen_stats(self, agent: str, dimension=None) -> dict:
+        dim = normalize_dimension(dimension)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*), MIN(first_seen), MAX(last_seen) FROM seen "
+                "WHERE agent=? AND dimension=?",
+                (str(agent), dim),
+            ).fetchone()
+        return {
+            "agent": str(agent),
+            "chunks": row[0] or 0,
+            "first_seen": row[1],
+            "last_seen": row[2],
+        }
 
     # --------------------------------------------------------------- cold tier
     def flush(self, force: bool = False):
