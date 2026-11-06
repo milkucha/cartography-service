@@ -17,6 +17,8 @@ import math
 import time
 from collections import Counter
 
+import mc_blocks
+
 MAX_PERCEPTION_CHUNKS = 1024
 DEFAULT_SIZE_CHUNKS = 16
 INNER_CHUNKS = 4
@@ -137,6 +139,7 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
         "resolution": "lod",
         "lod": levels,
         "surface": _surface_summary(records),
+        "terrain": _terrain_summary(records, x, z),
         "water": _water_summary(records, x, z),
         "biome": biome,
         "composition": composition,
@@ -251,6 +254,57 @@ def _surface_summary(records):
     }
 
 
+def _terrain_summary(records, x, z):
+    """Summarise the solid-ground surface: peak, low point, and per-direction peaks."""
+    highest = None
+    lowest = None
+    by_direction = {}
+
+    for (cx, cz), record in records.items():
+        surface = record.get("surface") or {}
+        ground_y = surface.get("ground_y") or []
+        water = surface.get("water") or []
+        materials = surface.get("ground_materials") or []
+        for index, y in enumerate(ground_y):
+            if y is None:
+                continue
+            if index < len(water) and water[index]:
+                continue
+            world_x = cx * 16 + (index % 16)
+            world_z = cz * 16 + (index // 16)
+            dx = world_x - x
+            dz = world_z - z
+            distance = math.hypot(dx, dz)
+            direction = _direction(dx, dz)
+            entry = {
+                "x": world_x,
+                "z": world_z,
+                "y": int(y),
+                "dx": dx,
+                "dz": dz,
+                "distance": round(distance, 1),
+                "direction": direction,
+                "material": materials[index] if index < len(materials) else None,
+            }
+            if highest is None or entry["y"] > highest["y"]:
+                highest = entry
+            if lowest is None or entry["y"] < lowest["y"]:
+                lowest = entry
+            previous = by_direction.get(direction)
+            if previous is None or entry["y"] > previous["y"]:
+                by_direction[direction] = {
+                    "y": int(y),
+                    "distance": round(distance, 1),
+                    "direction": direction,
+                }
+
+    return {
+        "highest": highest,
+        "lowest": lowest,
+        "highest_by_direction": by_direction,
+    }
+
+
 def _water_summary(records, x, z):
     at_center = False
     center = records.get((x >> 4, z >> 4))
@@ -299,6 +353,7 @@ def _direction(dx, dz):
 def _composition_summary(records):
     totals = Counter()
     top_blocks = Counter()
+    engineered_blocks = Counter()
     biomes = Counter()
 
     for record in records.values():
@@ -314,6 +369,11 @@ def _composition_summary(records):
             except (IndexError, TypeError, ValueError):
                 continue
             top_blocks[name] += count
+            try:
+                if mc_blocks.classify_block(name) == "engineered":
+                    engineered_blocks[name] += count
+            except Exception:
+                pass
 
         biome = composition.get("dominant_biome")
         if biome:
@@ -332,6 +392,7 @@ def _composition_summary(records):
         "air": totals["air"],
         "water_fraction": round(liquid / total, 3) if total else 0.0,
         "top_blocks": [[name, count] for name, count in top_blocks.most_common(TOP_BLOCKS_LIMIT)],
+        "engineered_blocks": [[name, count] for name, count in engineered_blocks.most_common(5)],
         "artificiality_score": round(engineered / noise, 3) if noise else 0.0,
     }
     biome = biomes.most_common(1)[0][0] if biomes else None

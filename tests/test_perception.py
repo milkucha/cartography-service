@@ -226,6 +226,15 @@ class CoastPerceptionTests(unittest.TestCase):
     def test_real_world_composition_and_biome(self):
         self.assertGreater(self.data["composition"]["natural"], 0)
         self.assertEqual(self.data["biome"], "minecraft:plains")
+        self.assertIn("engineered_blocks", self.data["composition"])
+
+    def test_real_world_terrain_peak(self):
+        terrain = self.data["terrain"]
+        self.assertIsNotNone(terrain["highest"])
+        self.assertIsNotNone(terrain["lowest"])
+        self.assertGreater(terrain["highest"]["y"], 0)
+        self.assertIn("highest_by_direction", terrain)
+        self.assertIsInstance(terrain["highest_by_direction"], dict)
 
     def test_real_world_materials(self):
         data = perception.build_perception(self.store, 8, 8, 4, materials=True)

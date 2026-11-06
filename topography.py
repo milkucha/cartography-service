@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from collections import Counter
 
+import mc_blocks
+
 WATER_BLOCKS = {
     "minecraft:water",
     "minecraft:bubble_column",
@@ -380,26 +382,37 @@ def area_summary(store, center_x: int, center_z: int, radius: int):
     grid, chunks, missing = _window_grid(store, center_x, center_z, radius)
     counts = Counter()
     top_blocks = Counter()
+    engineered_blocks = Counter()
     indicators = Counter()
     biomes = Counter()
     artificiality = []
     heights = []
     water = 0
+    highest_ground = None
     for data in chunks.values():
         comp = data.get("composition") or {}
         for key, value in (comp.get("counts") or {}).items():
             counts[key] += value
         for name, count in comp.get("top_blocks") or []:
             top_blocks[name] += count
+            try:
+                if mc_blocks.classify_block(name) == "engineered":
+                    engineered_blocks[name] += count
+            except Exception:
+                pass
         for name in comp.get("strong_indicators") or []:
             indicators[name] += 1
         if comp.get("dominant_biome"):
             biomes[comp["dominant_biome"]] += 1
         artificiality.append(comp.get("artificiality_score") or 0.0)
 
-    for col in grid.values():
+    for (world_x, world_z), col in grid.items():
         if col["ground_y"] is not None:
             heights.append(col["ground_y"])
+            if not col["water"] and (
+                highest_ground is None or col["ground_y"] > highest_ground["y"]
+            ):
+                highest_ground = {"x": world_x, "z": world_z, "y": col["ground_y"]}
         if col["water"]:
             water += 1
 
@@ -420,6 +433,10 @@ def area_summary(store, center_x: int, center_z: int, radius: int):
             sum(artificiality) / len(artificiality) if artificiality else 0.0
         ),
         "top_blocks": [[name, count] for name, count in top_blocks.most_common(10)],
+        "engineered_blocks": [
+            [name, count] for name, count in engineered_blocks.most_common(5)
+        ],
+        "highest_ground": highest_ground,
         "strong_indicators": dict(indicators.most_common(10)),
         "surface": {
             "min_y": min(heights) if heights else None,

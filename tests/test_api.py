@@ -196,6 +196,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["water"]["nearest"]["direction"], "east")
         self.assertNotIn("materials", payload["lod"][0])
         self.assertIn("window_version", payload)
+        self.assertIn("terrain", payload)
+        self.assertIn("highest", payload["terrain"])
+        self.assertIn("highest_by_direction", payload["terrain"])
+        self.assertIn("engineered_blocks", payload["composition"])
 
     def test_perception_default_size(self):
         status, payload = self._request("GET", "/perception", {"x": 8, "z": 8})
