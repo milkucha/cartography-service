@@ -39,7 +39,14 @@ Last-seen map (per-agent frozen views, see ``store_view``):
     saved once (zlib JSON) in ``chunk_history``; a history row is deleted as soon as no pin
     references it. With no pins on a chunk the cost is one dict lookup.
   * A chunk pinned at rev 0 (seen while the store had no data) adopts the first data that arrives
-    within ``FIRST_DATA_GRACE_S`` of the unload; later data is not attributed to that agent.
+    within ``FIRST_DATA_GRACE_S`` of the unload, or, for data read from a region file, whose on-disk
+    timestamp is at or before ``frozen_at + FIRST_DATA_GRACE_S`` (whenever it is read). Later data is
+    not attributed to that agent.
+  * Rev-0 pins are resolved eagerly: each is queued in ``_unresolved`` and ``resolve_pending`` (driven
+    by the prefetch worker, a small bounded batch per tick) reads the chunk from the save into the
+    cold tier (never warm/hot), retrying with backoff until the grace period ends, since the server
+    only writes new chunks at autosave/unload. Pins restored at startup are queued the same way, and a
+    query for a queued chunk resolves it on the spot.
 """
 
 from __future__ import annotations
@@ -74,7 +81,12 @@ FIRST_DATA_GRACE_S = 600.0          # data for a chunk the store had nothing on,
 LOADED_TTL_S = 120.0                # a tracked agent silent this long is treated as having unloaded all
 HISTORY_MAX_BYTES = 64 * 1024 * 1024   # compressed bytes of chunk_history kept in total
 HISTORY_MAX_PER_CHUNK = 8           # distinct pinned revisions kept per chunk
-FROZEN_CACHE_LIMIT = 1280           # decoded history records kept in memory (>= one 32x32 window)
+RESOLVE_BATCH = 32                  # rev-0 pins resolved per background step
+RESOLVE_BUDGET_S = 0.25             # wall-clock cap of one background step
+RESOLVE_RETRY_MIN_S = 5.0           # retry delay after a failed attempt, doubling ...
+RESOLVE_RETRY_MAX_S = 60.0          # ... up to this
+MAX_UNRESOLVED = 100_000            # queued rev-0 pins; beyond it only the data's own arrival adopts
+FROZEN_CACHE_LIMIT = 1280          # decoded history records kept in memory (>= one 32x32 window)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -186,6 +198,7 @@ class MapStore:
         # last-seen map state (see module docstring)
         self._pins: dict[tuple[int, int], dict[str, tuple[int, float]]] = {}
         self._agents: dict[str, dict] = {}
+        self._unresolved: dict[tuple[int, int], list] = {}   # key -> [next_try, attempts]
         self._rev_counter = 1
         self._hist_index: OrderedDict = OrderedDict()   # (cx, cz, rev) -> compressed size
         self._hist_by_chunk: dict[tuple[int, int], set] = {}
@@ -824,7 +837,7 @@ class MapStore:
             return
         data["rev"] = 1
         if self._pins.get(key):
-            self._adopt(key, 1)
+            self._adopt(key, 1, data.get("save_ts"))
             self._dirty.setdefault(key, data)   # a pinned chunk must outlive tier eviction
 
     def _set_changed(self, key, data):
@@ -834,15 +847,19 @@ class MapStore:
         if old == 0 and self._pins.get(key):
             self._adopt(key, data["rev"])
 
-    def _adopt(self, key, new_rev: int):
-        """First data for a chunk: pins at rev 0 inside the grace period follow it."""
+    def _adopt(self, key, new_rev: int, save_ts=None):
+        """First data for a chunk: pins at rev 0 follow it if it arrived inside the grace period or,
+        for data read from the save, was written there at or before ``frozen_at + grace``."""
         pins = self._pins.get(key)
         if not pins:
             return
         now = self._clock()
         moved = []
         for agent, (rev, at) in list(pins.items()):
-            if rev == 0 and now - at <= FIRST_DATA_GRACE_S:
+            if rev == 0 and (
+                now - at <= FIRST_DATA_GRACE_S
+                or (save_ts is not None and save_ts <= at + FIRST_DATA_GRACE_S)
+            ):
                 pins[agent] = (new_rev, at)
                 moved.append((new_rev, agent, OVERWORLD, key[0], key[1]))
         if moved:
@@ -850,6 +867,7 @@ class MapStore:
                 "UPDATE seen SET frozen_rev=? WHERE agent=? AND dimension=? AND cx=? AND cz=?", moved
             )
             self._conn.commit()
+            self._generation += 1   # what those agents see of the chunk changes (missing -> data)
 
     def known_rev(self, key):
         """Current rev without loading anything; ``None`` when the store has no record."""
@@ -1017,6 +1035,8 @@ class MapStore:
         ).fetchall()
         for cx, cz, rev, at in rows:
             self._pins.setdefault((cx, cz), {})[agent] = (rev, at)
+            if rev == 0:
+                self._queue_unresolved((cx, cz), 0.0)
 
     def _agent(self, agent):
         st = self._agents.get(agent)
@@ -1069,6 +1089,8 @@ class MapStore:
                 continue
             rev = self.known_rev(key) or 0
             pins[agent] = (rev, now)
+            if rev == 0:
+                self._queue_unresolved(key, now)
             data = self._hot.get(key) or self._warm.get(key)
             if data is not None:
                 self._dirty.setdefault(key, data)   # keep the pinned revision reachable
@@ -1078,6 +1100,85 @@ class MapStore:
                 "UPDATE seen SET frozen_rev=?, frozen_at=?, last_seen=? "
                 "WHERE agent=? AND dimension=? AND cx=? AND cz=?", rows
             )
+
+    # ------------------------------------------------- last-seen map: eager rev-0 resolution
+    def _queue_unresolved(self, key, due):
+        if key not in self._unresolved and len(self._unresolved) < MAX_UNRESOLVED:
+            self._unresolved[key] = [due, 0]
+
+    def _zero_deadline(self, key):
+        """Latest ``frozen_at + grace`` over the rev-0 pins of ``key`` (``None`` if there are none)."""
+        pins = self._pins.get(key)
+        ats = [at for rev, at in pins.values() if rev == 0] if pins else []
+        return max(ats) + FIRST_DATA_GRACE_S if ats else None
+
+    def _resolve_key(self, key, now) -> bool:
+        """Try to give the rev-0 pins of ``key`` their data from the save. True when finished
+        (resolved, or nothing more can change); False to retry later. Never promotes to warm/hot."""
+        with self._lock:
+            deadline = self._zero_deadline(key)
+            if deadline is None or self.known_rev(key) is not None:
+                return True
+        loader = self.loader
+        ts_fn = getattr(loader, "chunk_timestamp", None)
+        if loader is None or not callable(ts_fn):
+            return True
+        try:
+            ts = ts_fn(key[0], key[1])
+            if ts is None:
+                return now > deadline          # not written yet (new chunks are saved at autosave)
+            if ts > deadline:
+                return True                    # written after the grace period: not "as last seen"
+            data = loader.load_chunk(key[0], key[1])
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Resolving pinned chunk %s failed", key)
+            return now > deadline
+        if data is None:
+            return now > deadline
+        with self._lock:
+            if self.known_rev(key) is not None or self._zero_deadline(key) is None:
+                return True
+            data["source"] = "base"
+            data["loaded_at"] = self._clock()
+            if not data.get("save_ts"):
+                data["save_ts"] = ts
+            self._ensure_rev(key, data)   # adopts the rev-0 pins by save time
+            self._dirty[key] = data       # straight to the cold tier on the next flush
+        return True
+
+    def _finish_attempt(self, key, state, now, done):
+        if done:
+            self._unresolved.pop(key, None)
+        else:
+            state[1] += 1
+            state[0] = now + min(RESOLVE_RETRY_MIN_S * 2 ** (state[1] - 1), RESOLVE_RETRY_MAX_S)
+
+    def resolve_now(self, key) -> None:
+        """Lazy path for a query: resolve a queued rev-0 pin right away when its retry is due."""
+        state = self._unresolved.get(key)
+        if state is None:
+            return
+        now = self._clock()
+        if state[0] > now:
+            return
+        self._finish_attempt(key, state, now, self._resolve_key(key, now))
+
+    def resolve_pending(self, limit: int = RESOLVE_BATCH, budget_s: float = RESOLVE_BUDGET_S, now=None) -> int:
+        """One bounded background step; returns how many queued pins were still due afterwards."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            due = sorted((st[0], key) for key, st in self._unresolved.items() if st[0] <= now)
+        started = time.monotonic()
+        for n, (_t, key) in enumerate(due):
+            if n >= limit or time.monotonic() - started > budget_s:
+                return len(due) - n
+            state = self._unresolved.get(key)
+            if state is not None:
+                self._finish_attempt(key, state, now, self._resolve_key(key, now))
+        return 0
+
+    def unresolved_count(self) -> int:
+        return len(self._unresolved)
 
     def _unpin_loaded(self, agent, keys):
         for key in keys:
@@ -1294,6 +1395,7 @@ class MapStore:
                 "history_bytes": self._hist_bytes,
                 "history_evicted": self.history_evicted,
                 "pinned_chunks": len(self._pins),
+                "unresolved_pins": len(self._unresolved),
             }
 
 

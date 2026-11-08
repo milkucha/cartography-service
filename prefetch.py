@@ -66,9 +66,20 @@ class PrefetchWorker:
             self._thread = None
 
     # --------------------------------------------------------------- worker
+    def _resolve_step(self):
+        """One bounded step of the store's eager resolution of chunks pinned with no data."""
+        step = getattr(self.store, "resolve_pending", None)
+        if step is None:
+            return
+        try:
+            step()
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Resolving pinned chunks failed")
+
     def _run(self):
         while not self._stop.is_set():
             if not self._wake.wait(0.5):
+                self._resolve_step()
                 continue
             self._wake.clear()
             while not self._stop.is_set():
@@ -90,3 +101,4 @@ class PrefetchWorker:
                 else:
                     with self._lock:
                         self._last_completed = (center_cx, center_cz, size)
+            self._resolve_step()   # keeps running even while positions arrive continuously

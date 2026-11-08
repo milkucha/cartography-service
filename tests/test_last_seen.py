@@ -382,6 +382,163 @@ class FirstDataTests(Case):
         self.assertEqual(self.top_for("a", 2, 2), 70)
 
 
+class EagerResolutionTests(Case):
+    """A chunk the bot had loaded gets its data as of about when it saw it, without any query."""
+
+    G = map_store.FIRST_DATA_GRACE_S
+
+    def unloaded_unread(self, key=(0, 0)):
+        """The bot loads and unloads a chunk that exists in the save but was never read."""
+        self.load("a", key)
+        self.unload("a", key)
+        self.assertEqual(self.store.pin_of("a", key)[0], 0, "no data in the store at unload")
+
+    def test_save_data_is_resolved_with_no_query(self):
+        self.unloaded_unread()
+        gen = self.store.generation
+        self.t[0] += self.G + 100                  # nobody asked for it in the meantime
+        self.store.resolve_pending()
+        self.assertEqual(self.store.pin_of("a", (0, 0))[0], 1)
+        self.assertEqual(self.store.unresolved_count(), 0)
+        self.assertGreater(self.store.generation, gen)
+        self.assertNotIn((0, 0), self.store._warm)
+        self.assertNotIn((0, 0), self.store._hot)
+        self.t[0] += 5
+        self.assertEqual(self.top_for("a"), 64)
+
+    def test_query_much_later_returns_the_seen_data(self):
+        self.unloaded_unread()
+        self.t[0] += 30
+        self.store.resolve_pending()
+        self.store.apply_diff(dict(PLACE))         # the world moves on afterwards
+        self.t[0] += 3 * self.G
+        self.assertEqual(self.top_for("a"), 64)
+        self.assertEqual(top(self.store.get_or_load(0, 0)), 70)
+
+    def test_lazy_resolution_when_the_background_step_never_ran(self):
+        self.unloaded_unread()
+        self.t[0] += self.G + 100
+        self.assertEqual(self.top_for("a"), 64)
+
+    def test_later_save_within_grace_is_picked_up_by_retry(self):
+        self.loader.records.pop((2, 2)), self.loader.timestamps.pop((2, 2))
+        self.unloaded_unread((2, 2))
+        for _ in range(4):                          # not on disk yet: retried, not dropped
+            self.t[0] += 10
+            self.store.resolve_pending()
+        self.assertEqual(self.store.pin_of("a", (2, 2))[0], 0)
+        self.assertEqual(self.store.unresolved_count(), 1)
+        self.t[0] += 10
+        self.loader.put(helpers.make_record(2, 2, height=66), ts=int(self.t[0]))   # autosave
+        for _ in range(8):
+            self.t[0] += 10
+            self.store.resolve_pending()
+        self.assertEqual(self.store.pin_of("a", (2, 2))[0], 1)
+        self.assertEqual(self.top_for("a", 2, 2), 66)
+
+    def test_retries_back_off_and_stop_after_the_grace_period(self):
+        self.loader.records.pop((2, 2)), self.loader.timestamps.pop((2, 2))
+        self.unloaded_unread((2, 2))
+        calls = []
+        orig = self.loader.chunk_timestamp
+        self.loader.chunk_timestamp = lambda cx, cz: (calls.append(self.t[0]), orig(cx, cz))[1]
+        for _ in range(int(self.G / 5) + 40):
+            self.t[0] += 5
+            self.store.resolve_pending()
+        self.assertEqual(self.store.unresolved_count(), 0, "given up after the grace period")
+        self.assertLess(len(calls), 20, "backed off, did not poll every tick")
+        gaps = [b - a for a, b in zip(calls, calls[1:])]
+        self.assertLessEqual(max(gaps), map_store.RESOLVE_RETRY_MAX_S + 5)
+
+    def test_save_timestamp_past_the_grace_stays_unattributed(self):
+        self.unloaded_unread()
+        later = int(self.t[0] + self.G + 50)
+        self.loader.put(helpers.make_record(0, 0, height=80), ts=later)
+        self.t[0] += self.G + 100
+        self.store.resolve_pending()
+        self.assertEqual(self.store.pin_of("a", (0, 0))[0], 0)
+        self.assertEqual(self.store.unresolved_count(), 0)
+        self.assertIsNone(self.top_for("a"), "missing until revisit, as for late live data")
+        self.assertFalse(self.store._warm.get((0, 0)), "nothing was loaded for the stale pin")
+        self.load("a", (0, 0))
+        self.assertEqual(self.top_for("a"), 80)
+
+    def test_first_read_after_grace_adopts_by_save_time(self):
+        self.unloaded_unread()
+        self.t[0] += 5 * self.G
+        self.assertEqual(top(self.store.get_or_load(0, 0)), 64)   # someone reads it late
+        self.assertEqual(self.store.pin_of("a", (0, 0))[0], 1, "old on-disk timestamp: as the bot saw it")
+
+    def test_restart_resolves_pending_pins(self):
+        self.unloaded_unread()
+        self.store.stop()
+        self.t[0] += 2 * self.G                      # service was down for a while
+        again = self.open()
+        self.assertEqual(again.unresolved_count(), 1)
+        again.resolve_pending()
+        self.assertEqual(again.pin_of("a", (0, 0))[0], 1)
+        self.assertEqual(top(self.view("a", again).get_or_load(0, 0)), 64)
+
+    def test_restart_resolves_lazily_on_first_request(self):
+        self.unloaded_unread()
+        self.store.stop()
+        self.t[0] += 2 * self.G
+        again = self.open()
+        self.assertEqual(top(self.view("a", again).get_or_load(0, 0)), 64)
+
+    def test_restart_keeps_later_data_unattributed(self):
+        self.unloaded_unread()
+        self.loader.put(helpers.make_record(0, 0, height=80), ts=int(self.t[0] + self.G + 50))
+        self.store.stop()
+        self.t[0] += self.G + 100
+        again = self.open()
+        again.resolve_pending()
+        self.assertIsNone(self.view("a", again).get_or_load(0, 0))
+
+    def test_big_unload_batch_is_instant_and_resolved_in_bounded_steps(self):
+        base = helpers.make_record(0, 0, height=64)
+        n = 600
+        keys = [(i, 100) for i in range(n)]
+        for key in keys:
+            self.loader.records[key] = dict(base, cx=key[0], cz=key[1])
+            self.loader.timestamps[key] = 3
+        loads = []
+        orig = self.loader.load_chunk
+        self.loader.load_chunk = lambda cx, cz: (loads.append((cx, cz)), orig(cx, cz))[1]
+        self.store.report_chunks("a", keys, [], replace=True)
+        self.store.report_chunks("a", [], keys)       # one huge unload batch
+        self.assertEqual(loads, [], "the request path reads nothing from the save")
+        self.assertEqual(self.store.unresolved_count(), n)
+        self.t[0] += 10
+        self.store.resolve_pending()
+        self.assertLessEqual(len(loads), map_store.RESOLVE_BATCH)
+        loads.clear()
+        self.store.resolve_pending(budget_s=0.0)
+        self.assertLessEqual(len(loads), 1, "the wall-clock budget bounds a step")
+        steps = 0
+        while self.store.unresolved_count() and steps < 200:
+            self.store.resolve_pending()
+            steps += 1
+        self.assertEqual(self.store.unresolved_count(), 0)
+        self.assertGreaterEqual(steps, n // map_store.RESOLVE_BATCH - 2)
+        self.assertEqual(self.store.stats()["unresolved_pins"], 0)
+        self.assertTrue(all(self.store.pin_of("a", k)[0] >= 1 for k in keys))
+        self.assertEqual(len(self.store._hot) + len(self.store._warm), 0)
+
+    def test_queue_is_capped(self):
+        keys = [(i, 100) for i in range(10)]
+        with mock.patch.object(map_store, "MAX_UNRESOLVED", 3):
+            self.store.report_chunks("a", keys, [], replace=True)
+            self.store.report_chunks("a", [], keys)
+        self.assertEqual(self.store.unresolved_count(), 3)
+
+    def test_worker_runs_the_step(self):
+        import prefetch
+        self.unloaded_unread()
+        prefetch.PrefetchWorker(self.store)._resolve_step()
+        self.assertEqual(self.store.pin_of("a", (0, 0))[0], 1)
+
+
 class PersistenceTests(Case):
     def test_frozen_data_survives_restart(self):
         self.load("a", (0, 0))

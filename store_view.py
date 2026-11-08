@@ -50,6 +50,9 @@ class StoreView:
         if self._tracked and key not in self._loaded:
             store = self._store
             pin = store.pin_of(self.agent, key)
+            if pin is not None and pin[0] == 0:
+                store.resolve_now(key)   # data the save already held when the agent unloaded
+                pin = store.pin_of(self.agent, key)
             if pin is not None:
                 if pin[0] == 0 and not store.within_grace(pin):
                     return None   # seen when the store had nothing; later data is not "as last seen"
