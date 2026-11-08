@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -11,6 +12,7 @@ import landforms
 import map_store
 import perception
 import prefetch
+import route
 import settlements
 import store_view
 import survey
@@ -20,6 +22,7 @@ import topography
 log = logging.getLogger("topography.api")
 
 MAX_RADIUS = 256
+MAX_COORD = 30_000_000
 MAX_LINE_LENGTH = 4096
 MAX_BODY_BYTES = 1_000_000
 MAX_PERCEPTION_SIZE = 32
@@ -101,6 +104,8 @@ class TopographyAPI:
                         return self._landforms(params)
                     if parsed.path == "/survey":
                         return self._survey(params)
+                    if parsed.path == "/route":
+                        return self._route(params)
                     return self._error(404, f"Unknown endpoint {parsed.path}")
                 except ValueError as exc:
                     return self._error(400, str(exc))
@@ -185,6 +190,19 @@ class TopographyAPI:
                                      landforms.MAX_RADIUS, minimum=landforms.MIN_RADIUS)
                 target = self._target(params)
                 result = landforms.find_landforms(target, x, z, radius)
+                self._send(200, result)
+
+            def _route(self, params):
+                agent = (params.get("agent") or [""])[0].strip()
+                if not agent:
+                    raise ValueError("Missing required parameter 'agent' (routes plan over what that agent has seen)")
+                coords = {n: _int_param(params, n) for n in ("x", "z", "x2", "z2")}
+                if any(abs(v) > MAX_COORD for v in coords.values()):
+                    raise ValueError(f"Coordinates must be within +-{MAX_COORD}")
+                seed = params.get("seed")
+                rng = random.Random(_int_param(params, "seed")) if seed else None
+                target = store_view.StoreView(store, agent[:64])
+                result = route.route(target, coords["x"], coords["z"], coords["x2"], coords["z2"], rng=rng)
                 self._send(200, result)
 
             def _survey(self, params):
