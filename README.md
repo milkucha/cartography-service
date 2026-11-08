@@ -100,4 +100,4 @@ service.
 
 ## License
 
-CC BY-NC 4.0 — see [LICENSE](./LICENSE).
+PolyForm Noncommercial License 1.0.0 — see [LICENSE](./LICENSE). Free for noncommercial use; commercial use needs a separate licence from the author.
