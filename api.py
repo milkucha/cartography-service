@@ -7,6 +7,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import landforms
 import map_store
 import perception
 import prefetch
@@ -96,6 +97,8 @@ class TopographyAPI:
                         return self._chunk(params)
                     if parsed.path == "/settlements":
                         return self._settlements(params)
+                    if parsed.path == "/landforms":
+                        return self._landforms(params)
                     if parsed.path == "/survey":
                         return self._survey(params)
                     return self._error(404, f"Unknown endpoint {parsed.path}")
@@ -174,6 +177,15 @@ class TopographyAPI:
                 radius = _size_param(params, "radius", 96, settlements.MAX_RADIUS,
                                      minimum=settlements.MIN_RADIUS)
                 self._send(200, settlements.find_settlements(target, x, z, radius))
+
+            def _landforms(self, params):
+                x = _int_param(params, "x")
+                z = _int_param(params, "z")
+                radius = _size_param(params, "radius", landforms.DEFAULT_RADIUS,
+                                     landforms.MAX_RADIUS, minimum=landforms.MIN_RADIUS)
+                target = self._target(params)
+                result = landforms.find_landforms(target, x, z, radius)
+                self._send(200, result)
 
             def _survey(self, params):
                 target = self._target(params)

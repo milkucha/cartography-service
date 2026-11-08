@@ -35,7 +35,7 @@ Full request/response schemas and the diff contract:
 
 - Repo contract: [`../CONTRACT.md`](../CONTRACT.md)
 - Endpoints: `/health`, `/perception`, `/topography`, `/area_composition`, `/shoreline`, `/recall`,
-  `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/survey`, `/seen_stats`, and
+  `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/landforms`, `/survey`, `/seen_stats`, and
   `POST /diff`, `POST /chunk_snapshot`, `POST /position`, `POST /seen`.
 - `terrain_y` / `terrain_materials` (per column) are the topmost *natural ground-forming* block
   (grass, dirt, sand, gravel, stone family, ores, snow, ...), scanning down past roofs, floors,
@@ -47,6 +47,7 @@ Full request/response schemas and the diff contract:
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /settlements?x=&z=&radius=96&agent=` | Detect settlements/outposts from cached surface data (radius 16..256, max 8 results, stable `id`). |
+| `GET /landforms?x=&z=&radius=128&agent=` | Named landforms (cliff, hill, mountain, ridge, plateau, valley, plain, lake, river, ocean) from `terrain_y` and water flags: kind, direction/distance to the nearest point, y range, representative x/z, size, cliff facing, `partial`. Radius 16..256, max 12 results. Also returned as `landforms` in `/perception`. |
 | `GET /survey?x1=&z1=&x2=&z2=&agent=` | Architectural digest of a bbox (max 160x160 blocks / 400 chunks, else 400): buildings, material palette by role, dimensions, landmarks, `summary`. |
 | `POST /seen` `{"agent","dimension","chunks":[[cx,cz],...]}` | Record chunks an agent has seen (max 5000 per call; non-overworld => `{"accepted":0,"ignored":n}`). |
 | `GET /seen_stats?agent=` | `{"agent","chunks","first_seen","last_seen"}`. |
@@ -65,7 +66,7 @@ landmarks (bell, beacon, lectern, enchanting table, brewing stand) lag behind bl
 the server last saved the chunk. Building geometry uses the store.
 
 Gating: every terrain GET (`/perception`, `/topography`, `/area_composition`, `/shoreline`,
-`/recall`, `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/survey`) accepts
+`/recall`, `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/landforms`, `/survey`) accepts
 `agent=`. With it, chunks missing from that agent's ledger are treated as missing (counted in
 `missing_chunks` and `unexplored_chunks`) and their data is never returned (`/chunk` and
 `/recall` give 404). Gating is implemented once in `store_view.StoreView`. Without `agent=`
@@ -92,6 +93,7 @@ The suite builds a synthetic coast world in a temp directory, so it needs no Min
 | `composition.py` | Block classification and indicators |
 | `mc_nbt.py`, `region.py`, `palette.py` | Anvil region / NBT / palette decoders |
 | `mc_blocks.py` | Block classification tables |
+| `landforms.py` | Landform classifier (thresholds at top of file) |
 | `settlements.py`, `survey.py`, `store_view.py` | Settlement detection, survey digest, per-agent gated store view |
 
 `mc_nbt.py`, `region.py`, `palette.py`, and `composition.py` are adapted from the local

@@ -18,7 +18,12 @@ import time
 from collections import Counter
 from functools import lru_cache
 
+import logging
+
+import landforms
 import mc_blocks
+
+log = logging.getLogger("topography.perception")
 
 MAX_PERCEPTION_CHUNKS = 1024
 DEFAULT_SIZE_CHUNKS = 16
@@ -145,10 +150,20 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
         "water": _water_summary(records, x, z),
         "biome": biome,
         "composition": composition,
+        "landforms": _landforms(store, records, x, z),
         "missing_chunks": missing,
         "updated_at": updated_at,
         "window_version": int(getattr(store, "generation", 0) or 0),
     }
+
+
+def _landforms(store, records, x, z):
+    """Named landforms for the window (perception-only; never raises into the prompt path)."""
+    try:
+        return landforms.for_window(records, store, x, z)
+    except Exception:  # pragma: no cover - defensive
+        log.exception("landform classification failed")
+        return []
 
 
 # --------------------------------------------------------------------- window
