@@ -111,7 +111,7 @@ def _terrain(surface):
 
 
 def _features(rec, gen):
-    key = (rec["cx"], rec["cz"])
+    key = (rec["cx"], rec["cz"], rec.get("rev"))
     hit = _feat_cache.get(key)
     if hit is not None and hit[0] is rec and hit[1] == gen:
         return hit[2]
@@ -436,7 +436,7 @@ def find_settlements(store, x, z, radius=96):
             else:
                 records[(cx, cz)] = rec
     gen = int(getattr(store, "generation", 0) or 0)
-    key = (tuple((k, id(r)) for k, r in records.items()), gen, id(getattr(store, "_store", store)))
+    key = (tuple((k, id(r), r.get("rev")) for k, r in records.items()), gen, id(getattr(store, "_store", store)))
     found = _memo.get(key)
     if found is None:
         found = _build_settlements(records, gen)

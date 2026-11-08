@@ -161,13 +161,22 @@ class TopographyAPI:
                 chunks = payload.get("chunks")
                 if not isinstance(chunks, list):
                     return self._error(400, "Expected 'chunks': [[cx, cz], ...]")
+                unloaded = payload.get("unloaded")
+                if unloaded is not None and not isinstance(unloaded, list):
+                    return self._error(400, "Expected 'unloaded': [[cx, cz], ...]")
                 if not map_store.is_overworld(payload.get("dimension")):
-                    return self._send(200, {"accepted": 0, "ignored": len(chunks)})
-                accepted = store.mark_seen(agent, chunks, payload.get("dimension"))
-                result = {"accepted": accepted}
-                if len(chunks) > accepted:
-                    result["ignored"] = len(chunks) - accepted
-                self._send(200, result)
+                    return self._send(200, {"accepted": 0, "ignored": len(chunks) + len(unloaded or [])})
+                replace = payload.get("replace") is True
+                result = store.report_chunks(
+                    agent, chunks, unloaded, payload.get("dimension"), replace=replace
+                )
+                body = {"accepted": result["loaded"]}
+                if unloaded is not None:
+                    body["unloaded"] = result["unloaded"]
+                ignored = len(chunks) - result["loaded"]
+                if ignored > 0:
+                    body["ignored"] = ignored
+                self._send(200, body)
 
             def _seen_stats(self, params):
                 agent = (params.get("agent") or [""])[0].strip()

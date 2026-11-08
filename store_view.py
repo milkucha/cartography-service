@@ -1,10 +1,19 @@
 """Per-agent gated view of the map store.
 
 ``StoreView(store, agent)`` exposes the same read methods the query functions use
-(``get_or_load``, ``get_chunk``, ``touch_window``, ``get_window`` ...) but treats every chunk
-that is not in the agent's seen ledger as MISSING: the data is never returned. Gating lives
-here, at the store boundary, so endpoints cannot forget it. Chunks refused this way are
-collected in ``unexplored`` (a set of (cx, cz)).
+(``get_or_load``, ``get_chunk``, ``touch_window``, ``get_window`` ...) with two rules:
+
+* a chunk that is not in the agent's seen ledger is MISSING: the data is never returned. Chunks
+  refused this way are collected in ``unexplored`` (a set of (cx, cz));
+* a seen chunk the agent does not currently have loaded is shown *as it was when the agent last
+  had it* (``rec["frozen"]`` is True; the record comes from the store's copy-on-write history).
+  Chunks the agent has loaded, and every chunk of an agent that never reported unloads (old
+  clients), are live.
+
+Gating and freezing live here, at the store boundary, so endpoints cannot forget them. Frozen
+records are never placed in the hot/warm tiers and are shared read-only between agents pinned at
+the same revision; the query modules key their memo caches on the record's ``rev`` as well as
+its identity, so a frozen record is never served as live data or the other way round.
 """
 
 from __future__ import annotations
@@ -17,6 +26,8 @@ class StoreView:
         self._store = store
         self.agent = str(agent)
         self.unexplored: set = set()
+        store.sweep_loaded()
+        self._tracked, self._loaded = store.loaded_snapshot(self.agent)
 
     def _seen(self):
         return self._store._seen_set(self.agent)
@@ -32,11 +43,32 @@ class StoreView:
         self.unexplored.add((int(cx), int(cz)))
         return False
 
+    def _fetch(self, cx, cz, live_fn):
+        key = (int(cx), int(cz))
+        if not self._allowed(*key):
+            return None
+        if self._tracked and key not in self._loaded:
+            store = self._store
+            pin = store.pin_of(self.agent, key)
+            if pin is not None:
+                if pin[0] == 0 and not store.within_grace(pin):
+                    return None   # seen when the store had nothing; later data is not "as last seen"
+                rev = store.known_rev(key)
+                if pin[0] and rev is not None and pin[0] < rev:
+                    return store.history_record(key, pin[0])   # changed since: no live read at all
+                return store.resolve_after_live(self.agent, key, live_fn(*key))
+        return live_fn(*key)
+
+    def _resolve(self, key, rec):
+        if self._tracked and key not in self._loaded:
+            return self._store.resolve_after_live(self.agent, key, rec)
+        return rec
+
     def get_chunk(self, cx, cz):
-        return self._store.get_chunk(cx, cz) if self._allowed(cx, cz) else None
+        return self._fetch(cx, cz, self._store.get_chunk)
 
     def get_or_load(self, cx, cz):
-        return self._store.get_or_load(cx, cz) if self._allowed(cx, cz) else None
+        return self._fetch(cx, cz, self._store.get_or_load)
 
     def get_chunk_at(self, x, z):
         return self.get_chunk(int(x) // 16, int(z) // 16)
@@ -50,7 +82,14 @@ class StoreView:
         unseen = {k for k in window if k not in seen}
         self.unexplored |= unseen
         records, missing = self._store.touch_window(center_cx, center_cz, size_chunks)
-        kept = [r for r in records if (r["cx"], r["cz"]) in seen]
+        kept = []
+        for r in records:
+            key = (r["cx"], r["cz"])
+            if key not in seen:
+                continue
+            r = self._resolve(key, r)
+            if r is not None:
+                kept.append(r)
         return kept, size * size - len(kept)
 
     def get_window(self, center_cx, center_cz, radius_chunks):

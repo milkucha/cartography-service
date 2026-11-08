@@ -127,8 +127,8 @@ def _scan_sections(store, records, buildings, in_bbox_chunks):
         if key not in in_bbox_chunks:
             continue
         rec = records.get(key)
-        if rec is None:
-            continue
+        if rec is None or rec.get("frozen"):
+            continue   # the save holds the chunk as it is now, not as the agent last saw it
         root = loader.read_chunk_root(key[0], key[1])
         if not root:
             continue

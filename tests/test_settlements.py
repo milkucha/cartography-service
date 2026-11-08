@@ -211,7 +211,8 @@ class LedgerTests(unittest.TestCase):
             seeded.stop()
             conn = sqlite3.connect(self.path)
             conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (version,))
-            conn.execute("INSERT INTO chunks VALUES (3, 4, '{}', '{}', 1.0, NULL, NULL)")
+            conn.execute("INSERT INTO chunks (cx, cz, surface_json, composition_json, updated_at) "
+                         "VALUES (3, 4, '{}', '{}', 1.0)")
             conn.commit()
             conn.close()
             store = map_store.MapStore(self.path, None)

@@ -102,7 +102,7 @@ _memo: "OrderedDict[tuple, list]" = OrderedDict()
 
 def _chunk_cells(rec, gen):
     """16 cells (row-major 4x4 of 4-block cells): ``(mean|None, lo, hi, wet, water_y)``."""
-    key = (rec["cx"], rec["cz"])
+    key = (rec["cx"], rec["cz"], rec.get("rev"))
     hit = _feat_cache.get(key)
     if hit is not None and hit[0] is rec and hit[1] == gen:
         return hit[2]
@@ -566,7 +566,7 @@ def describe(found, x, z, limit=MAX_RESULTS, max_distance=None):
 
 def _cached_analysis(records, store):
     gen = int(getattr(store, "generation", 0) or 0)
-    key = (tuple((k, id(r)) for k, r in records.items()), gen, id(getattr(store, "_store", store)))
+    key = (tuple((k, id(r), r.get("rev")) for k, r in records.items()), gen, id(getattr(store, "_store", store)))
     found = _memo.get(key)
     if found is None:
         found = analyze(records, gen)

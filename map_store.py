@@ -27,6 +27,19 @@ Trust model (the save is the base, diffs/snapshots are overlays):
     in-memory log (:class:`_DiffLog`).
   * The cold SQLite tier is stamped with a schema version and a ``world_id``
     (resolved region dir + seed); a mismatch discards the cold rows.
+
+Last-seen map (per-agent frozen views, see ``store_view``):
+  * Every stored chunk carries a ``rev``. A freshly registered base record is rev 1; any change
+    to its surface data (diff, snapshot, reload from a newer save) takes a new, store-wide
+    unique rev from a persisted counter. Rev 0 means "the store has no data for this chunk".
+  * An agent that reports with the tracked protocol (``unloaded`` / ``replace`` on ``POST /seen``)
+    has a *loaded* set (in memory only). Every seen chunk that is not loaded is *pinned* at the
+    chunk's rev at the time it left the agent's loaded set (persisted in ``seen.frozen_rev``).
+  * Before a chunk is changed, if some agent is pinned at its current rev, the old stored form is
+    saved once (zlib JSON) in ``chunk_history``; a history row is deleted as soon as no pin
+    references it. With no pins on a chunk the cost is one dict lookup.
+  * A chunk pinned at rev 0 (seen while the store had no data) adopts the first data that arrives
+    within ``FIRST_DATA_GRACE_S`` of the unload; later data is not attributed to that agent.
 """
 
 from __future__ import annotations
@@ -36,6 +49,7 @@ import logging
 import sqlite3
 import threading
 import time
+import zlib
 from collections import OrderedDict, deque
 from pathlib import Path
 
@@ -54,6 +68,13 @@ MAX_PERCEPTION_CHUNKS = 1024
 SCHEMA_VERSION = 4
 CHUNKS_MIN_VERSION = 4
 MAX_SEEN_PER_CALL = 5000
+
+# Last-seen map tuning (see module docstring).
+FIRST_DATA_GRACE_S = 600.0          # data for a chunk the store had nothing on, after an unload
+LOADED_TTL_S = 120.0                # a tracked agent silent this long is treated as having unloaded all
+HISTORY_MAX_BYTES = 64 * 1024 * 1024   # compressed bytes of chunk_history kept in total
+HISTORY_MAX_PER_CHUNK = 8           # distinct pinned revisions kept per chunk
+FROZEN_CACHE_LIMIT = 1280           # decoded history records kept in memory (>= one 32x32 window)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -76,6 +97,16 @@ CREATE TABLE IF NOT EXISTS seen (
     first_seen REAL NOT NULL,
     last_seen REAL NOT NULL,
     PRIMARY KEY (agent, dimension, cx, cz)
+)
+"""
+HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chunk_history (
+    cx INTEGER NOT NULL,
+    cz INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (cx, cz, revision)
 )
 """
 META_SCHEMA = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -152,12 +183,24 @@ class MapStore:
         self.discarded_cold = 0
         self.reloaded_stale = 0
         self._seen_cache: dict[tuple[str, str], set] = {}
+        # last-seen map state (see module docstring)
+        self._pins: dict[tuple[int, int], dict[str, tuple[int, float]]] = {}
+        self._agents: dict[str, dict] = {}
+        self._rev_counter = 1
+        self._hist_index: OrderedDict = OrderedDict()   # (cx, cz, rev) -> compressed size
+        self._hist_by_chunk: dict[tuple[int, int], set] = {}
+        self._hist_bytes = 0
+        self._frozen_cache: OrderedDict = OrderedDict()
+        self.history_evicted = 0
+        self.history_saved = 0
+        self.history_lost_reads = 0
 
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self.world_id = self._loader_world_id()
         self._open_schema()
+        self._init_last_seen()
 
     def _loader_world_id(self):
         fn = getattr(self.loader, "world_id", None)
@@ -191,9 +234,18 @@ class MapStore:
             row = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
             self.discarded_cold = row[0] if row else 0
             conn.execute("DROP TABLE chunks")
+            conn.execute("DROP TABLE IF EXISTS chunk_history")  # its revisions belonged to the dropped rows
             log.warning("Discarding %s cold chunk rows: %s", self.discarded_cold, reason)
         conn.execute(SCHEMA)
         conn.execute(SEEN_SCHEMA)
+        conn.execute(HISTORY_SCHEMA)
+        # Last-seen columns are always added by ALTER (new and old databases take the same path;
+        # existing rows are kept).
+        self._add_column("chunks", "rev", "INTEGER NOT NULL DEFAULT 1")
+        self._add_column("seen", "frozen_rev", "INTEGER")
+        self._add_column("seen", "frozen_at", "REAL")
+        if reason:
+            conn.execute("UPDATE seen SET frozen_rev=NULL, frozen_at=NULL")
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -205,6 +257,11 @@ class MapStore:
             )
         conn.commit()
 
+    def _add_column(self, table: str, name: str, decl: str):
+        cols = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if name not in cols:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
     @property
     def generation(self) -> int:
         """Monotonic counter incremented whenever a diff/snapshot is applied."""
@@ -215,6 +272,7 @@ class MapStore:
     def _remember_hot(self, key: tuple[int, int], data: dict):
         """Mark ``key`` hot. Hot and warm are kept disjoint."""
         self._warm.pop(key, None)
+        self._ensure_rev(key, data)
         self._hot[key] = data
         self._hot.move_to_end(key)
         while len(self._hot) > self.hot_limit:
@@ -222,6 +280,7 @@ class MapStore:
             self._remember_warm(old_key, old_data)
 
     def _remember_warm(self, key: tuple[int, int], data: dict):
+        self._ensure_rev(key, data)
         self._warm[key] = data
         self._warm.move_to_end(key)
         while len(self._warm) > self.warm_limit:
@@ -229,7 +288,7 @@ class MapStore:
 
     def _read_cold(self, cx: int, cz: int):
         row = self._conn.execute(
-            "SELECT surface_json, composition_json, updated_at, save_ts, loaded_at "
+            "SELECT surface_json, composition_json, updated_at, save_ts, loaded_at, rev "
             "FROM chunks WHERE cx=? AND cz=?",
             (cx, cz),
         ).fetchone()
@@ -243,6 +302,7 @@ class MapStore:
             "updated_at": row[2],
             "save_ts": row[3],
             "loaded_at": row[4],
+            "rev": row[5] or 1,
             "source": "cold",
         }
 
@@ -280,6 +340,8 @@ class MapStore:
                 else:
                     self._apply_snapshot_to(fresh, payload)
             self.reloaded_stale += 1
+            self._preserve(key, data)   # an agent frozen on the old form keeps it
+            fresh["rev"] = self._next_rev()
             self._install(key, fresh)
             self._dirty[key] = fresh
         log.info("Chunk %s reloaded: save is newer (%s > %s)", key, current, recorded)
@@ -418,7 +480,12 @@ class MapStore:
         """Preload path: store in warm + dirty. Never introduces a hot chunk."""
         key = (int(data["cx"]), int(data["cz"]))
         with self._lock:
+            existing = self._hot.get(key) or self._warm.get(key)
+            if existing is not None and existing is not data:
+                self._preserve(key, existing)
+                data["rev"] = self._next_rev()
             if key in self._hot:
+                self._ensure_rev(key, data)
                 self._hot[key] = data
             else:
                 self._remember_warm(key, data)
@@ -473,6 +540,7 @@ class MapStore:
         """Install a mutated record, mark dirty and bump the generation."""
         if log_entry is not None:
             self._difflog.add(key, self._clock(), *log_entry)
+        self._set_changed(key, data)
         self._install(key, data)
         self._dirty[key] = data
         self._generation += 1
@@ -507,6 +575,7 @@ class MapStore:
             # A concurrent writer may have made the chunk resident meanwhile.
             data = self._hot.get(key) or self._warm.get(key) or data
             clean = {k: v for k, v in delta.items() if k != "dimension"}
+            self._preserve(key, data)
             self._apply_delta_to(data, clean)
             data["source"] = "diff"
             self._commit(key, data, ("diff", clean))
@@ -725,6 +794,7 @@ class MapStore:
         data = self._acquire(key)
         with self._lock:
             data = self._hot.get(key) or self._warm.get(key) or data
+            self._preserve(key, data)
             self._apply_snapshot_to(data, clean)
             data["source"] = "snapshot"
             self._commit(key, data, ("snap", clean))
@@ -743,6 +813,363 @@ class MapStore:
                 except (TypeError, ValueError):
                     continue
 
+    # ------------------------------------------------------- last-seen map: revisions
+    def _next_rev(self) -> int:
+        self._rev_counter += 1
+        return self._rev_counter
+
+    def _ensure_rev(self, key, data):
+        """Register a record that has no rev yet as the base state (rev 1)."""
+        if data.get("rev"):
+            return
+        data["rev"] = 1
+        if self._pins.get(key):
+            self._adopt(key, 1)
+            self._dirty.setdefault(key, data)   # a pinned chunk must outlive tier eviction
+
+    def _set_changed(self, key, data):
+        """Give ``data`` a new revision after its surface changed."""
+        old = data.get("rev") or 0
+        data["rev"] = self._next_rev()
+        if old == 0 and self._pins.get(key):
+            self._adopt(key, data["rev"])
+
+    def _adopt(self, key, new_rev: int):
+        """First data for a chunk: pins at rev 0 inside the grace period follow it."""
+        pins = self._pins.get(key)
+        if not pins:
+            return
+        now = self._clock()
+        moved = []
+        for agent, (rev, at) in list(pins.items()):
+            if rev == 0 and now - at <= FIRST_DATA_GRACE_S:
+                pins[agent] = (new_rev, at)
+                moved.append((new_rev, agent, OVERWORLD, key[0], key[1]))
+        if moved:
+            self._conn.executemany(
+                "UPDATE seen SET frozen_rev=? WHERE agent=? AND dimension=? AND cx=? AND cz=?", moved
+            )
+            self._conn.commit()
+
+    def known_rev(self, key):
+        """Current rev without loading anything; ``None`` when the store has no record."""
+        with self._lock:
+            data = self._hot.get(key) or self._warm.get(key) or self._dirty.get(key)
+            if data is not None:
+                return data.get("rev") or 1
+            row = self._conn.execute(
+                "SELECT rev FROM chunks WHERE cx=? AND cz=?", key
+            ).fetchone()
+            return (row[0] or 1) if row else None
+
+    # ------------------------------------------------------- last-seen map: history
+    def _preserve(self, key, data):
+        """Copy-on-write: keep ``data``'s stored form if an agent is pinned at its rev."""
+        pins = self._pins.get(key)
+        if not pins or data is None:
+            return
+        rev = data.get("rev") or 1
+        if not any(p[0] == rev for p in pins.values()):
+            return
+        have = self._hist_by_chunk.get(key)
+        if have and rev in have:
+            return
+        payload = {
+            "surface": data.get("surface"),
+            "composition": data.get("composition"),
+            "save_ts": data.get("save_ts"),
+            "loaded_at": data.get("loaded_at"),
+            "updated_at": data.get("updated_at"),
+        }
+        blob = zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"), 3)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO chunk_history (cx, cz, revision, data, created_at) VALUES (?, ?, ?, ?, ?)",
+            (key[0], key[1], rev, blob, self._clock()),
+        )
+        self._hist_index[(key[0], key[1], rev)] = len(blob)
+        self._hist_by_chunk.setdefault(key, set()).add(rev)
+        self._hist_bytes += len(blob)
+        self.history_saved += 1
+        self._enforce_history_caps(key, rev)   # commits
+
+    def _drop_history(self, key, rev, commit=True):
+        size = self._hist_index.pop((key[0], key[1], rev), None)
+        if size is None:
+            return
+        self._hist_bytes -= size
+        revs = self._hist_by_chunk.get(key)
+        if revs is not None:
+            revs.discard(rev)
+            if not revs:
+                del self._hist_by_chunk[key]
+        self._frozen_cache.pop((key, rev), None)
+        self._conn.execute(
+            "DELETE FROM chunk_history WHERE cx=? AND cz=? AND revision=?", (key[0], key[1], rev)
+        )
+        if commit:
+            self._conn.commit()
+
+    def _prune_history(self, key):
+        """Delete history rows of ``key`` that no pin references any more."""
+        revs = self._hist_by_chunk.get(key)
+        if not revs:
+            return
+        used = {p[0] for p in (self._pins.get(key) or {}).values()}
+        for rev in [r for r in revs if r not in used]:
+            self._drop_history(key, rev)
+
+    def _enforce_history_caps(self, key, keep_rev):
+        """Evict the oldest history rows beyond the caps; the row just saved is kept.
+
+        An evicted revision is *lost*: agents still pinned at it see that chunk as missing (never
+        as live data) until they load it again. ``history_evicted`` counts these.
+        """
+        revs = self._hist_by_chunk.get(key) or ()
+        while len(revs) > HISTORY_MAX_PER_CHUNK:
+            victim = min((r for r in revs if r != keep_rev), default=None)
+            if victim is None:
+                break
+            self._drop_history(key, victim, commit=False)
+            self.history_evicted += 1
+        keep = (key[0], key[1], keep_rev)
+        while self._hist_bytes > HISTORY_MAX_BYTES and len(self._hist_index) > 1:
+            oldest = next(iter(self._hist_index))   # insertion order = oldest first
+            if oldest == keep:
+                self._hist_index.move_to_end(oldest)
+                continue
+            self._drop_history((oldest[0], oldest[1]), oldest[2], commit=False)
+            self.history_evicted += 1
+        self._conn.commit()
+
+    def history_record(self, key, rev):
+        """Decoded frozen record for ``(key, rev)`` or ``None`` when it was lost."""
+        ck = (key, rev)
+        with self._lock:
+            hit = self._frozen_cache.get(ck)
+            if hit is not None:
+                self._frozen_cache.move_to_end(ck)
+                return hit
+            if rev not in (self._hist_by_chunk.get(key) or ()):
+                self.history_lost_reads += 1
+                return None
+            row = self._conn.execute(
+                "SELECT data FROM chunk_history WHERE cx=? AND cz=? AND revision=?",
+                (key[0], key[1], rev),
+            ).fetchone()
+            if row is None:
+                self.history_lost_reads += 1
+                return None
+            rec = json.loads(zlib.decompress(row[0]).decode("utf-8"))
+            rec.update({"cx": key[0], "cz": key[1], "rev": rev, "frozen": True, "source": "frozen"})
+            self._frozen_cache[ck] = rec
+            while len(self._frozen_cache) > FROZEN_CACHE_LIMIT:
+                self._frozen_cache.popitem(last=False)
+            return rec
+
+    # ------------------------------------------------------- last-seen map: agents
+    def _init_last_seen(self):
+        conn = self._conn
+        meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        try:
+            counter = int(meta.get("rev_counter") or 0)
+        except ValueError:
+            counter = 0
+        for sql in (
+            "SELECT MAX(rev) FROM chunks",
+            "SELECT MAX(frozen_rev) FROM seen",
+            "SELECT MAX(revision) FROM chunk_history",
+        ):
+            row = conn.execute(sql).fetchone()
+            counter = max(counter, (row[0] or 0) if row else 0)
+        self._rev_counter = max(1, counter)
+        for hx, hz, hrev, size in conn.execute(
+            "SELECT cx, cz, revision, LENGTH(data) FROM chunk_history ORDER BY created_at"
+        ).fetchall():
+            self._hist_index[(hx, hz, hrev)] = size
+            self._hist_by_chunk.setdefault((hx, hz), set()).add(hrev)
+            self._hist_bytes += size
+        for name in meta:
+            if name.startswith("tracked:"):
+                agent = name[len("tracked:"):]
+                self._agents[agent] = {"tracked": True, "loaded": set(), "last_report": 0.0}
+                self._resolve_unknown_pins(agent)
+                self._load_pins(agent)
+        # history nobody references any more (an agent loaded the chunk, then the service stopped)
+        for key in list(self._hist_by_chunk):
+            self._prune_history(key)
+
+    def _resolve_unknown_pins(self, agent):
+        """Rows with no pin (the agent had them loaded when the service stopped, or they predate the
+        last-seen map) become frozen at the chunk's current rev: nothing is loaded after a restart."""
+        self.flush()   # the rows must carry the revs of the records in memory
+        self._conn.execute(
+            "UPDATE seen SET frozen_rev=COALESCE((SELECT c.rev FROM chunks c WHERE c.cx=seen.cx AND c.cz=seen.cz), 1), "
+            "frozen_at=? WHERE agent=? AND dimension=? AND frozen_rev IS NULL",
+            (self._clock(), agent, OVERWORLD),
+        )
+        self._conn.commit()
+
+    def _load_pins(self, agent):
+        rows = self._conn.execute(
+            "SELECT cx, cz, frozen_rev, COALESCE(frozen_at, 0) FROM seen "
+            "WHERE agent=? AND dimension=? AND frozen_rev IS NOT NULL",
+            (agent, OVERWORLD),
+        ).fetchall()
+        for cx, cz, rev, at in rows:
+            self._pins.setdefault((cx, cz), {})[agent] = (rev, at)
+
+    def _agent(self, agent):
+        st = self._agents.get(agent)
+        if st is None:
+            st = self._agents[agent] = {"tracked": False, "loaded": set(), "last_report": 0.0}
+        return st
+
+    def _become_tracked(self, agent, st):
+        st["tracked"] = True
+        self._conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, '1')", ("tracked:" + agent,)
+        )
+        self._resolve_unknown_pins(agent)
+        self._load_pins(agent)
+
+    def pin_of(self, agent, key):
+        pins = self._pins.get(key)
+        return pins.get(agent) if pins else None
+
+    def within_grace(self, pin) -> bool:
+        return self._clock() - pin[1] <= FIRST_DATA_GRACE_S
+
+    def loaded_snapshot(self, agent):
+        """``(tracked, loaded_chunks)`` for the gated view of ``agent``."""
+        with self._lock:
+            st = self._agents.get(agent)
+            if st is None or not st["tracked"]:
+                return False, frozenset()
+            return True, frozenset(st["loaded"])
+
+    def resolve_after_live(self, agent, key, live):
+        """What ``agent`` sees of a chunk it does not have loaded, given the live record."""
+        if live is None:
+            return None
+        pin = self.pin_of(agent, key)
+        if pin is None:
+            return live
+        if pin[0] == 0:
+            return None
+        if pin[0] >= (live.get("rev") or 1):
+            return live
+        return self.history_record(key, pin[0])
+
+    def _pin_unloaded(self, agent, keys, now):
+        """Freeze ``keys`` for ``agent`` at their current revision (existing pins keep theirs)."""
+        rows = []
+        for key in keys:
+            pins = self._pins.setdefault(key, {})
+            if agent in pins:
+                continue
+            rev = self.known_rev(key) or 0
+            pins[agent] = (rev, now)
+            data = self._hot.get(key) or self._warm.get(key)
+            if data is not None:
+                self._dirty.setdefault(key, data)   # keep the pinned revision reachable
+            rows.append((rev, now, now, agent, OVERWORLD, key[0], key[1]))
+        if rows:
+            self._conn.executemany(
+                "UPDATE seen SET frozen_rev=?, frozen_at=?, last_seen=? "
+                "WHERE agent=? AND dimension=? AND cx=? AND cz=?", rows
+            )
+
+    def _unpin_loaded(self, agent, keys):
+        for key in keys:
+            pins = self._pins.get(key)
+            if not pins or agent not in pins:
+                continue
+            rev = pins.pop(agent)[0]
+            if not pins:
+                del self._pins[key]
+            cur = self.known_rev(key)
+            if rev and cur is not None and rev < cur:
+                self._generation += 1   # what this agent sees of the chunk changes (frozen -> live)
+            self._prune_history(key)
+
+    def sweep_loaded(self, now=None):
+        """Treat tracked agents that stopped reporting as having unloaded everything."""
+        now = self._clock() if now is None else now
+        with self._lock:
+            for agent, st in self._agents.items():
+                if st["tracked"] and st["loaded"] and now - st["last_report"] > LOADED_TTL_S:
+                    self._pin_unloaded(agent, sorted(st["loaded"]), now)
+                    st["loaded"].clear()
+                    self._conn.commit()
+
+    def report_chunks(self, agent, chunks=(), unloaded=None, dimension=None, replace=False) -> dict:
+        """Record which chunks ``agent`` has loaded (``chunks``) and unloaded (``unloaded``).
+
+        Both count as seen. ``unloaded`` / ``replace`` switch the agent to the tracked protocol
+        (frozen views); with ``replace`` the ``chunks`` list is the agent's complete loaded set.
+        A chunk in both lists ends unloaded. Returns ``{"loaded": n, "unloaded": m}``.
+        """
+        dim = normalize_dimension(dimension)
+        agent = str(agent)
+        loads = self._clean_chunks(chunks)
+        unl = self._clean_chunks(unloaded)
+        replace = bool(replace) and len(chunks or ()) <= MAX_SEEN_PER_CALL
+        now = self._clock()
+        if not loads and not unl and not replace:
+            return {"loaded": 0, "unloaded": 0}
+        with self._lock:
+            seen = self._seen_set(agent, dim)
+            if dim != OVERWORLD:
+                self._upsert_seen(agent, dim, loads + unl, now)
+                self._conn.commit()
+                seen.update(loads + unl)
+                return {"loaded": len(loads), "unloaded": len(unl)}
+            st = self._agent(agent)
+            if (unloaded is not None or replace) and not st["tracked"]:
+                self._become_tracked(agent, st)
+            st["last_report"] = now
+            tracked = st["tracked"]
+            self._upsert_seen(agent, dim, loads, now, loaded=True)
+            seen.update(loads)
+            if tracked:
+                st["loaded"].update(loads)
+                self._unpin_loaded(agent, loads)
+            gone = set(unl)
+            if replace and tracked:
+                gone |= st["loaded"] - set(loads)
+            fresh = [k for k in gone if k not in seen]
+            if fresh:
+                self._upsert_seen(agent, dim, fresh, now, loaded=True)
+                seen.update(fresh)
+            if tracked and gone:
+                st["loaded"] -= gone
+                self._pin_unloaded(agent, sorted(gone), now)
+            self._conn.commit()
+        return {"loaded": len(loads), "unloaded": len(gone)}
+
+    @staticmethod
+    def _clean_chunks(items):
+        clean = []
+        for item in items or []:
+            if len(clean) >= MAX_SEEN_PER_CALL:
+                break
+            try:
+                clean.append((int(item[0]), int(item[1])))
+            except (TypeError, ValueError, IndexError, KeyError):
+                continue
+        return clean
+
+    def _upsert_seen(self, agent, dim, keys, now, loaded=False):
+        if not keys:
+            return
+        self._conn.executemany(
+            "INSERT INTO seen (agent, dimension, cx, cz, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(agent, dimension, cx, cz) DO UPDATE SET last_seen=excluded.last_seen"
+            + (", frozen_rev=NULL, frozen_at=NULL" if loaded else ""),
+            [(agent, dim, cx, cz, now, now) for cx, cz in keys],
+        )
+
     # ------------------------------------------------------------ seen ledger
     def _seen_set(self, agent: str, dimension: str = OVERWORLD) -> set:
         """Lazily loaded in-memory set of (cx, cz) the agent has seen."""
@@ -757,31 +1184,11 @@ class MapStore:
             return cached
 
     def mark_seen(self, agent: str, chunks, dimension=None) -> int:
-        """Upsert chunks into the agent's ledger (at most 5000 per call)."""
-        dim = normalize_dimension(dimension)
-        clean = []
-        for item in chunks or []:
-            if len(clean) >= MAX_SEEN_PER_CALL:
-                break
-            try:
-                clean.append((int(item[0]), int(item[1])))
-            except (TypeError, ValueError, IndexError, KeyError):
-                continue
-        if not clean:
-            return 0
-        now = time.time()
-        agent = str(agent)
-        with self._lock:
-            seen = self._seen_set(agent, dim)
-            self._conn.executemany(
-                "INSERT INTO seen (agent, dimension, cx, cz, first_seen, last_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(agent, dimension, cx, cz) DO UPDATE SET last_seen=excluded.last_seen",
-                [(agent, dim, cx, cz, now, now) for cx, cz in clean],
-            )
-            self._conn.commit()
-            seen.update(clean)
-        return len(clean)
+        """Upsert chunks into the agent's ledger (at most 5000 per call); they count as loaded.
+
+        The legacy entry point: it never switches an agent to the tracked protocol.
+        """
+        return self.report_chunks(agent, chunks, None, dimension)["loaded"]
 
     def seen_filter(self, agent: str, chunk_keys, dimension=None) -> set:
         """Return the subset of ``chunk_keys`` the agent has seen."""
@@ -824,19 +1231,25 @@ class MapStore:
                         now,
                         data.get("save_ts"),
                         data.get("loaded_at"),
+                        data.get("rev") or 1,
                     )
                 )
             self._dirty.clear()
             self._conn.executemany(
                 "INSERT INTO chunks (cx, cz, surface_json, composition_json, updated_at, "
-                "save_ts, loaded_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "save_ts, loaded_at, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(cx, cz) DO UPDATE SET "
                 "surface_json=excluded.surface_json, "
                 "composition_json=excluded.composition_json, "
                 "updated_at=excluded.updated_at, "
                 "save_ts=excluded.save_ts, "
-                "loaded_at=excluded.loaded_at",
+                "loaded_at=excluded.loaded_at, "
+                "rev=excluded.rev",
                 rows,
+            )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('rev_counter', ?)",
+                (str(self._rev_counter),),
             )
             self._conn.commit()
             return len(rows)
@@ -848,6 +1261,10 @@ class MapStore:
                     dirty = len(self._dirty)
                 if dirty > 0:
                     self.flush()
+                try:
+                    self.sweep_loaded()
+                except Exception:  # pragma: no cover - defensive
+                    log.exception("sweep_loaded failed")
 
         self._flush_thread = threading.Thread(target=loop, name="map-store-flush", daemon=True)
         self._flush_thread.start()
@@ -873,6 +1290,10 @@ class MapStore:
                 "world_id": self.world_id,
                 "discarded_cold": self.discarded_cold,
                 "reloaded_stale": self.reloaded_stale,
+                "history_rows": len(self._hist_index),
+                "history_bytes": self._hist_bytes,
+                "history_evicted": self.history_evicted,
+                "pinned_chunks": len(self._pins),
             }
 
 
