@@ -1,5 +1,5 @@
-"""Named landform classification (cliff, hill, mountain, ridge, plateau, valley, plain, lake,
-river, ocean) from the stored per-column surface data.
+"""Named landform classification (cliff, canyon, hill, mountain, ridge, plateau, valley, plain,
+lake, river, ocean, beach, island) from the stored per-column surface data.
 
 Heights are the *natural* ground ``terrain_y`` (``ground_y`` for old rows without it, exactly as
 ``perception.terrain_arrays``), so roofs, trees and decks never read as terrain. Water comes from
@@ -19,7 +19,10 @@ Pipeline (all pure Python, cached per window like ``settlements``):
   4. 8-block cells + a smooth "local base" (lower quartile of the surroundings, ~160 blocks)
      -> raised masses -> plateau / ridge / mountain / hill by shape and prominence,
   5. valley floors (higher ground on both sides along some axis), plains (low relief, low
-     prominence, large).
+     prominence, large),
+  6. canyons (deep, narrow cuts with high walls on both sides, 4-block grid; they take
+     precedence over valleys), beaches (sand next to a real water body) and islands (land whose
+     whole ring of neighbour cells is confirmed water; unseen/missing neighbours disqualify it).
 
 Results are ranked by salience over distance, capped per kind, and described relative to the
 query point (nearest relevant point, direction, distance).
@@ -65,6 +68,25 @@ VALLEY_REACH = 6          # ... within this many 8-cells (48 blocks)
 VALLEY_MIN_CELLS = 8
 VALLEY_MIN_LENGTH = 40
 
+CANYON_DEPTH = 24         # both walls at least this much above the floor ... (valley: 12)
+CANYON_REACH = 5          # ... within this many 4-cells (20 blocks): walls ~1.2+ slope, width <= ~40
+CANYON_MIN_CELLS = 6
+CANYON_MIN_LENGTH = 32
+CANYON_MAX_WIDTH = 40     # rim to rim; wider cuts stay valleys
+
+BEACH_SAND = frozenset({"minecraft:sand", "minecraft:red_sand", "sand", "red_sand"})  # gravel: no
+BEACH_MIN_SAND = 6        # sand columns (of 16) for a 4-cell to be sandy ...
+BEACH_MIN_SAND_FRAC = 0.5  # ... and at least this share of its dry columns
+BEACH_MAX_RELIEF = 4      # max-min of the cell's terrain: low relief
+BEACH_MAX_ABOVE_WATER = 6  # cell mean at most this far above the neighbouring water surface
+BEACH_MIN_WATER_AREA = 192  # the adjacent water must be lake-sized, not a pond
+BEACH_MIN_CELLS = 5
+BEACH_MIN_LENGTH = 24     # blocks, so a sand patch is not a beach
+BEACH_MAX_WIDTH = 24      # a strip; a wider sand body is a desert, not a beach
+
+ISLAND_MIN_AREA = 400     # blocks^2 (~20x20): a single rock or sandbar is not an island
+ISLAND_MAX_AREA = 20000   # blocks^2 (~140x140): larger is a landmass, not an island
+
 PLAIN_MAX_PROM = 6
 PLAIN_MAX_RELIEF = 5      # max-min over the 3x3 neighbourhood of 8-cells
 PLAIN_MIN_CELLS = 64      # ~64x64 blocks
@@ -84,11 +106,11 @@ MIN_RADIUS = 16
 DEFAULT_RADIUS = 128
 MAX_RESULTS = 12
 PERCEPTION_LIMIT = 8
-PER_KIND_CAP = {"cliff": 3}
+PER_KIND_CAP = {"cliff": 3, "canyon": 2, "beach": 2, "island": 2}
 DEFAULT_PER_KIND = 2
 
-KINDS = ("cliff", "hill", "mountain", "ridge", "plateau", "valley", "plain", "lake", "river",
-         "ocean")
+KINDS = ("cliff", "canyon", "hill", "mountain", "ridge", "plateau", "valley", "plain", "lake",
+         "river", "ocean", "beach", "island")
 
 _NB8 = [(dx, dz) for dx in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dz) != (0, 0)]
 _NB4 = [(1, 0), (-1, 0), (0, 1), (0, -1)]
@@ -101,20 +123,23 @@ _memo: "OrderedDict[tuple, list]" = OrderedDict()
 
 
 def _chunk_cells(rec, gen):
-    """16 cells (row-major 4x4 of 4-block cells): ``(mean|None, lo, hi, wet, water_y)``."""
+    """16 cells (row-major 4x4 of 4-block cells):
+    ``(mean|None, lo, hi, wet, water_y, sand, wet_cols)``. ``sand`` counts dry columns whose
+    natural terrain block is sand/red_sand (``terrain_materials``, ``ground_materials`` fallback,
+    like the heights). Cached by (cx, cz, rev) and tied to the record identity and generation."""
     key = (rec["cx"], rec["cz"], rec.get("rev"))
     hit = _feat_cache.get(key)
     if hit is not None and hit[0] is rec and hit[1] == gen:
         return hit[2]
     surf = rec.get("surface") or {}
-    ty, _ = perception.terrain_arrays(surf)
+    ty, tm = perception.terrain_arrays(surf)
     water = surf.get("water") or []
     sy = surf.get("y") or []
-    n_ty, n_w, n_sy = len(ty), len(water), len(sy)
+    n_ty, n_w, n_sy, n_tm = len(ty), len(water), len(sy), len(tm)
     cells = []
     for cz4 in range(4):
         for cx4 in range(4):
-            total = count = wet = 0
+            total = count = wet = sand = 0
             lo = hi = None
             wy = None
             for r in range(4):
@@ -131,11 +156,13 @@ def _chunk_cells(rec, gen):
                         continue
                     total += y
                     count += 1
+                    if i < n_tm and tm[i] in BEACH_SAND:
+                        sand += 1
                     if lo is None or y < lo:
                         lo = y
                     if hi is None or y > hi:
                         hi = y
-            cells.append((total / count if count else None, lo, hi, wet >= 8, wy))
+            cells.append((total / count if count else None, lo, hi, wet >= 8, wy, sand, wet))
     _feat_cache[key] = (rec, gen, cells)
     _feat_cache.move_to_end(key)
     while len(_feat_cache) > _FEAT_LIMIT:
@@ -247,8 +274,12 @@ def analyze(records, gen=0):
     out = []
     out.extend(_water_forms(c4))
     out.extend(_cliffs(c4))
+    canyons, canyon_cells = _canyons(c4)
+    out.extend(canyons)
+    out.extend(_beaches(c4))
+    out.extend(_islands(c4))
     s8 = _super_cells(c4)
-    out.extend(_relief_forms(s8))
+    out.extend(_relief_forms(s8, canyon_cells))
     return out
 
 
@@ -284,7 +315,7 @@ def _water_forms(c4):
 # ---- cliffs
 def _cliffs(c4):
     steep = set()
-    for k, (mean, lo, hi, wet, _) in c4.items():
+    for k, (mean, lo, hi, wet, *_) in c4.items():
         if mean is None:
             continue
         if hi - lo >= CLIFF_CELL_RANGE:
@@ -337,6 +368,136 @@ def _facing(comp, c4):
     if math.hypot(gx, gz) < CLIFF_FACING_MIN_SLOPE:
         return None
     return compass(-gx, -gz)
+
+
+# ---- canyon / beach / island (4-block grid)
+def _canyons(c4):
+    """Deep, narrow cuts. Returns ``(entries, footprint)``; the footprint is the set of 8-cells
+    (floor, walls and a margin) that valleys must not claim, so ground is never both."""
+    axes = ((1, 0), (0, 1), (1, 1), (1, -1))
+    floor = {}   # cell -> (rim_y, span_blocks)
+    for k, v in c4.items():
+        if v[0] is None:
+            continue
+        best = None
+        for dx, dz in axes:
+            hits = []
+            for sgn in (1, -1):
+                hit = None
+                for step in range(1, CANYON_REACH + 1):
+                    q = c4.get((k[0] + sgn * step * dx, k[1] + sgn * step * dz))
+                    if q is None:
+                        break  # unknown ground: stop, never extrapolate
+                    if q[0] is not None and q[0] - v[0] >= CANYON_DEPTH:
+                        hit = (step, q[0])
+                        break
+                hits.append(hit)
+            if hits[0] is None or hits[1] is None:
+                continue
+            span = (hits[0][0] + hits[1][0] - 1) * 4 * (1.4142 if dx and dz else 1.0)
+            if span > CANYON_MAX_WIDTH:
+                continue
+            rim = min(hits[0][1], hits[1][1])
+            if best is None or span < best[1]:
+                best = (rim, span)
+        if best is not None:
+            floor[k] = best
+    out = []
+    footprint = set()
+    for comp in _components(floor, _NB8):
+        if len(comp) < CANYON_MIN_CELLS:
+            continue
+        length, _, _, _ = _shape(comp, 4)
+        if length < CANYON_MIN_LENGTH:
+            continue
+        spans = sorted(floor[k][1] for k in comp)
+        rims = sorted(floor[k][0] for k in comp)
+        width = max(4.0, spans[len(spans) // 2])
+        rim_y = int(round(rims[len(rims) // 2]))
+        floor_y = min(c4[k][1] for k in comp)
+        depth = max(0, rim_y - floor_y)
+        low = min(comp, key=lambda k: c4[k][0])
+        pts8 = {(k[0] >> 1, k[1] >> 1) for k in comp}
+        for (a, b) in pts8:
+            for da in range(-3, 4):
+                for db in range(-3, 4):
+                    footprint.add((a + da, b + db))
+        out.append(_entry("canyon", depth + min(length, 120) * 0.25 + 20, pts8, 8,
+                          low[0] * 4 + 2, low[1] * 4 + 2, floor_y, rim_y, length, width,
+                          len(comp) * 16, _partial(comp, c4), depth=depth))
+    return out, footprint
+
+
+def _beaches(c4):
+    """Sandy, low-relief cells touching a lake-sized water body, in strips of some length."""
+    wet = {k for k, v in c4.items() if v[3]}
+    water = set()
+    for comp in _components(wet, _NB8):
+        if len(comp) * 16 >= BEACH_MIN_WATER_AREA:
+            water.update(comp)
+    if not water:
+        return []
+    cand = set()
+    for k, v in c4.items():
+        mean, lo, hi, is_wet, _, sand, wet_cols = v
+        if mean is None or is_wet or sand < BEACH_MIN_SAND:
+            continue
+        if sand < BEACH_MIN_SAND_FRAC * (16 - wet_cols) or hi - lo > BEACH_MAX_RELIEF:
+            continue
+        near = [(k[0] + dx, k[1] + dz) for dx, dz in _NB8 if (k[0] + dx, k[1] + dz) in water]
+        if not near:
+            continue
+        levels = [c4[q][4] for q in near if c4[q][4] is not None]
+        if levels and mean - min(levels) > BEACH_MAX_ABOVE_WATER:
+            continue
+        cand.add(k)
+    out = []
+    for comp in _components(cand, _NB8):
+        if len(comp) < BEACH_MIN_CELLS:
+            continue
+        length, width, _, _ = _shape(comp, 4)
+        if length < BEACH_MIN_LENGTH or width > BEACH_MAX_WIDTH:
+            continue
+        x, z = _centre_of(comp, 4)
+        out.append(_entry("beach", 10 + min(length, 100) * 0.15,
+                          {(k[0] >> 1, k[1] >> 1) for k in comp}, 8, x, z,
+                          min(c4[k][1] for k in comp), max(c4[k][2] for k in comp),
+                          length, width, len(comp) * 16, _partial(comp, c4)))
+    return out
+
+
+def _islands(c4):
+    """Land components whose whole 8-neighbour ring is confirmed water. A missing neighbour
+    (unseen chunk, data edge, radius edge) or a no-data one disqualifies the land: an island
+    is never reported on partial evidence."""
+    land = {k for k, v in c4.items() if v[0] is not None and not v[3]}
+    out = []
+    for comp in _components(land, _NB8):
+        area = len(comp) * 16
+        if area < ISLAND_MIN_AREA or area > ISLAND_MAX_AREA:
+            continue
+        cs = set(comp)
+        ring_ok = True
+        for (a, b) in comp:
+            for dx, dz in _NB8:
+                q = (a + dx, b + dz)
+                if q in cs:
+                    continue
+                v = c4.get(q)
+                if v is None or not v[3]:
+                    ring_ok = False
+                    break
+            if not ring_ok:
+                break
+        if not ring_ok:
+            continue
+        length, width, _, _ = _shape(comp, 4)
+        peak = max(comp, key=lambda k: c4[k][2])
+        x, z = _centre_of(comp, 4)
+        out.append(_entry("island", 15 + math.sqrt(area) * 0.3,
+                          {(k[0] >> 1, k[1] >> 1) for k in comp}, 8, x, z,
+                          min(c4[k][1] for k in comp), c4[peak][2], length, width, area, False))
+    return out
 
 
 # ---- relief forms on the 8-block grid
@@ -395,7 +556,7 @@ def _local_base(s8):
     return base
 
 
-def _relief_forms(s8):
+def _relief_forms(s8, canyon_cells=frozenset()):
     base = _local_base(s8)
     prom = {k: s8[k][0] - b for k, b in base.items()}
     raised = {k for k, p in prom.items() if p >= HILL_PROM}
@@ -407,7 +568,7 @@ def _relief_forms(s8):
         mass_cells.update(comp)
         out.append(_mass(comp, s8, base, prom))
     out = [o for o in out if o]
-    valley_cells, valleys = _valleys(s8)
+    valley_cells, valleys = _valleys(s8, canyon_cells)
     out.extend(valleys)
     out.extend(_plains(s8, prom, valley_cells))
     return out
@@ -458,7 +619,7 @@ def _mass(comp, s8, base, prom):
                   **common)
 
 
-def _valleys(s8):
+def _valleys(s8, exclude=frozenset()):
     axes = ((1, 0), (0, 1), (1, 1), (1, -1))
     floor = {}
     for (i, j), v in s8.items():
@@ -481,7 +642,7 @@ def _valleys(s8):
                 depth = min(sides) - v[0]
                 if depth > best:
                     best = depth
-        if best >= VALLEY_DEPTH:
+        if best >= VALLEY_DEPTH and (i, j) not in exclude:
             floor[(i, j)] = best
     out = []
     for comp in _components(floor, _NB8):

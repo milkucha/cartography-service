@@ -20,7 +20,7 @@ from api import TopographyAPI
 from tests import helpers
 
 
-def make_rec(cx, cz, height_fn, water_fn=None, top_fn=None):
+def make_rec(cx, cz, height_fn, water_fn=None, top_fn=None, mat_fn=None):
     """Chunk record from per-column functions (``height_fn(x, z)`` = natural ground)."""
     ty, y, water = [], [], []
     for lz in range(16):
@@ -32,7 +32,8 @@ def make_rec(cx, cz, height_fn, water_fn=None, top_fn=None):
             water.append(wl is not None)
             top = top_fn(x, z) if top_fn else None
             y.append(wl if wl is not None else (top if top is not None else h))
-    mats = [helpers.GRASS] * 256
+    mats = ([mat_fn(cx * 16 + i % 16, cz * 16 + i // 16) for i in range(256)] if mat_fn
+            else [helpers.GRASS] * 256)
     return {
         "cx": cx, "cz": cz,
         "surface": {"y": y, "materials": mats, "ground_y": list(y), "ground_materials": mats,
@@ -45,7 +46,7 @@ def make_rec(cx, cz, height_fn, water_fn=None, top_fn=None):
 
 
 class Terrain(unittest.TestCase):
-    def make(self, box, height_fn, water_fn=None, top_fn=None, skip=()):
+    def make(self, box, height_fn, water_fn=None, top_fn=None, skip=(), mat_fn=None):
         """Store over chunks ``box`` = (cx1, cz1, cx2, cz2) minus ``skip``."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -53,7 +54,7 @@ class Terrain(unittest.TestCase):
         for cx in range(box[0], box[2] + 1):
             for cz in range(box[1], box[3] + 1):
                 if (cx, cz) not in skip:
-                    recs[(cx, cz)] = make_rec(cx, cz, height_fn, water_fn, top_fn)
+                    recs[(cx, cz)] = make_rec(cx, cz, height_fn, water_fn, top_fn, mat_fn)
         store = map_store.MapStore(str(Path(tmp.name) / "m.db"), helpers.FakeLoader(recs))
         self.addCleanup(store.stop)
         return store
@@ -323,6 +324,185 @@ class ApiTests(Terrain):
         self.assertEqual(st, 200)
         self.assertEqual(res["landforms"], [])
         self.assertGreater(res["unexplored_chunks"], 0)
+
+
+SAND = helpers.SAND
+BIG = (-8, -8, 7, 7)  # 256x256 blocks
+OCEAN_E = lambda x, z: 63 if x >= 20 else None  # noqa: E731 - sea east of x = 20
+
+
+def disc(cx, cz, r, inside, outside):
+    return lambda x, z: inside if (x - cx) ** 2 + (z - cz) ** 2 <= r * r else outside
+
+
+class CanyonTests(Terrain):
+    def test_canyon(self):
+        # 13-wide cut, 40 deep, in a flat 80 plateau; runs the whole box north-south
+        res = self.find(self.make(BOX, lambda x, z: 40 if abs(z) <= 6 else 80))
+        c = self.one(res, "canyon")
+        self.assertEqual((c["y_min"], c["y_max"]), (40, 80))
+        self.assertEqual(c["depth"], 40)
+        self.assertLessEqual(c["size"]["width"], 30)
+        self.assertGreaterEqual(c["size"]["length"], 100)
+        self.assertTrue(c["inside"])
+
+    def test_canyon_is_not_also_a_valley(self):
+        res = self.find(self.make(BOX, lambda x, z: 40 if abs(z) <= 6 else 80))
+        self.assertIn("canyon", self.kinds(res))
+        self.assertNotIn("valley", self.kinds(res))
+
+    def test_broad_valley_is_not_a_canyon(self):
+        res = self.find(self.make(BOX, lambda x, z: int(64 + min(40, abs(z) * 0.8))))
+        self.assertIn("valley", self.kinds(res))
+        self.assertNotIn("canyon", self.kinds(res))
+
+    def test_wide_deep_cut_is_a_valley_not_a_canyon(self):
+        res = self.find(self.make(BOX, lambda x, z: 40 if abs(z) <= 20 else 80))
+        self.assertNotIn("canyon", self.kinds(res))
+        self.assertIn("valley", self.kinds(res))
+
+    def test_shallow_cut_is_not_a_canyon(self):
+        res = self.find(self.make(BOX, lambda x, z: 64 if abs(z) <= 6 else 80))
+        self.assertNotIn("canyon", self.kinds(res))
+
+    def test_short_pit_is_not_a_canyon(self):
+        res = self.find(self.make(BOX, lambda x, z: 40 if abs(z) <= 6 and abs(x) <= 8 else 80))
+        self.assertNotIn("canyon", self.kinds(res))
+
+    def test_canyon_gated(self):
+        store = self.make(BOX, lambda x, z: 40 if abs(z) <= 6 else 80)
+        self.assertEqual(landforms.find_landforms(store_view.StoreView(store, "bot"), 0, 0, 64)
+                         ["landforms"], [])
+        store.mark_seen("bot", [[cx, cz] for cx in range(-5, 5) for cz in range(-5, 5)], None)
+        res = landforms.find_landforms(store_view.StoreView(store, "bot"), 0, 0, 64)
+        self.assertIn("canyon", self.kinds(res))
+
+
+class BeachTests(Terrain):
+    sea_h = staticmethod(lambda x, z: 60 if x >= 20 else 64)
+
+    def sandy(self, lo, hi):
+        return lambda x, z: SAND if lo <= x < hi else helpers.GRASS
+
+    def test_beach_by_sea(self):
+        store = self.make(BOX, self.sea_h, OCEAN_E, mat_fn=self.sandy(8, 20))
+        res = self.find(store)
+        b = self.one(res, "beach")
+        self.assertEqual(b["direction"], "east")
+        self.assertGreaterEqual(b["size"]["length"], 100)
+        self.assertLessEqual(b["size"]["width"], landforms.BEACH_MAX_WIDTH)
+
+    def test_red_sand_counts(self):
+        store = self.make(BOX, self.sea_h, OCEAN_E,
+                          mat_fn=lambda x, z: "minecraft:red_sand" if 8 <= x < 20 else helpers.GRASS)
+        self.assertIn("beach", self.kinds(self.find(store)))
+
+    def test_gravel_shore_is_not_a_beach(self):
+        store = self.make(BOX, self.sea_h, OCEAN_E,
+                          mat_fn=lambda x, z: "minecraft:gravel" if 8 <= x < 20 else helpers.GRASS)
+        self.assertNotIn("beach", self.kinds(self.find(store)))
+
+    def test_grass_shore_is_not_a_beach(self):
+        self.assertNotIn("beach", self.kinds(self.find(self.make(BOX, self.sea_h, OCEAN_E))))
+
+    def test_sand_patch_by_small_pond_is_not_a_beach(self):
+        def water(x, z):
+            return 63 if (x - 30) ** 2 + z ** 2 <= 36 else None
+        store = self.make(BOX, lambda x, z: 60 if water(x, z) else 64, water,
+                          mat_fn=lambda x, z: SAND if (x - 30) ** 2 + z ** 2 <= 20 ** 2
+                          else helpers.GRASS)
+        self.assertNotIn("beach", self.kinds(self.find(store)))
+
+    def test_inland_sand_is_not_a_beach(self):
+        store = self.make(BOX, lambda x, z: 64, mat_fn=self.sandy(-40, 20))
+        self.assertNotIn("beach", self.kinds(self.find(store)))
+
+    def test_short_sand_strip_by_the_sea_is_not_a_beach(self):
+        store = self.make(BOX, self.sea_h, OCEAN_E,
+                          mat_fn=lambda x, z: SAND if 8 <= x < 20 and abs(z) <= 5 else helpers.GRASS)
+        self.assertNotIn("beach", self.kinds(self.find(store)))
+
+    def test_steep_sandy_shore_is_not_a_beach(self):
+        store = self.make(BOX, lambda x, z: 64 + 3 * max(0, 20 - x) if x < 20 else 60, OCEAN_E,
+                          mat_fn=self.sandy(-20, 20))
+        self.assertNotIn("beach", self.kinds(self.find(store)))
+
+    def test_beach_gated(self):
+        store = self.make(BOX, self.sea_h, OCEAN_E, mat_fn=self.sandy(8, 20))
+        self.assertEqual(landforms.find_landforms(store_view.StoreView(store, "bot"), 0, 0, 64)
+                         ["landforms"], [])
+        store.mark_seen("bot", [[cx, cz] for cx in range(-5, 5) for cz in range(-5, 5)], None)
+        res = landforms.find_landforms(store_view.StoreView(store, "bot"), 0, 0, 64)
+        self.assertIn("beach", self.kinds(res))
+
+    def test_feature_cache_is_isolated_by_record(self):
+        # same chunk coordinates and rev in two stores: one sandy, one grass
+        sandy = self.make(BOX, self.sea_h, OCEAN_E, mat_fn=self.sandy(8, 20))
+        grass = self.make(BOX, self.sea_h, OCEAN_E)
+        self.assertIn("beach", self.kinds(self.find(sandy)))
+        self.assertNotIn("beach", self.kinds(self.find(grass)))
+        self.assertIn("beach", self.kinds(self.find(sandy)))
+
+
+class IslandTests(Terrain):
+    def sea(self, island_fn):
+        """Sea everywhere (water 63 over floor 55) with land where ``island_fn`` gives a height."""
+        def water(x, z):
+            return None if island_fn(x, z) is not None else 63
+        return (lambda x, z: island_fn(x, z) if island_fn(x, z) is not None else 55), water
+
+    def test_island(self):
+        h, w = self.sea(lambda x, z: 66 + max(0, 6 - ((x - 20) ** 2 + z ** 2) ** 0.5 / 3)
+                        if (x - 20) ** 2 + z ** 2 <= 15 ** 2 else None)
+        res = self.find(self.make(BOX, lambda x, z: int(h(x, z)), w), x=-30)
+        i = self.one(res, "island")
+        self.assertEqual(i["direction"], "east")
+        self.assertGreaterEqual(i["y_max"], 70)
+        self.assertFalse(i["partial"])
+        self.assertAlmostEqual(i["size"]["length"], 30, delta=10)
+        self.assertAlmostEqual(i["distance"], 35, delta=8)
+
+    def test_island_touching_unseen_chunks_is_not_reported(self):
+        h, w = self.sea(lambda x, z: 70 if (x - 20) ** 2 + z ** 2 <= 15 ** 2 else None)
+        # chunks east of x = 32 missing: the island's east edge borders no-data
+        store = self.make(BOX, h, w, skip={(cx, cz) for cx in range(2, 5) for cz in range(-5, 5)})
+        res = self.find(store)
+        self.assertNotIn("island", self.kinds(res))
+        self.assertNotIn("island", [f["kind"] for f in res["landforms"]])
+
+    def test_island_in_gated_view_needs_every_edge_seen(self):
+        h, w = self.sea(lambda x, z: 70 if (x - 20) ** 2 + z ** 2 <= 15 ** 2 else None)
+        store = self.make(BOX, h, w)
+        store.mark_seen("bot", [[cx, cz] for cx in range(-5, 2) for cz in range(-5, 5)], None)
+        res = landforms.find_landforms(store_view.StoreView(store, "bot"), 0, 0, 64)
+        self.assertNotIn("island", self.kinds(res))
+        store.mark_seen("bot", [[cx, cz] for cx in range(2, 5) for cz in range(-5, 5)], None)
+        res = landforms.find_landforms(store_view.StoreView(store, "bot"), 0, 0, 64)
+        self.assertIn("island", self.kinds(res))
+
+    def test_rock_is_not_an_island(self):
+        h, w = self.sea(lambda x, z: 70 if (x - 20) ** 2 + z ** 2 <= 4 ** 2 else None)
+        self.assertNotIn("island", self.kinds(self.find(self.make(BOX, h, w))))
+
+    def test_landmass_is_not_an_island(self):
+        h, w = self.sea(lambda x, z: 70 if x * x + z * z <= 90 ** 2 else None)
+        res = self.find(self.make(BIG, h, w), radius=128)
+        self.assertNotIn("island", self.kinds(res))
+
+    def test_land_reaching_the_data_edge_is_not_an_island(self):
+        h, w = self.sea(lambda x, z: 70 if x <= 0 else None)
+        self.assertNotIn("island", self.kinds(self.find(self.make(BOX, h, w))))
+
+    def test_pond_in_land_is_not_an_island(self):
+        res = self.find(self.make(BOX, lambda x, z: 64))
+        self.assertNotIn("island", self.kinds(res))
+
+    def test_existing_kinds_still_found_alongside(self):
+        res = self.find(self.make(BOX, lambda x, z: 110 if x < -40 else 70))
+        self.assertIn("cliff", self.kinds(res))
+        res = self.find(self.make(BOX, bump(40, 0, 25, 30), mat_fn=lambda x, z: SAND))
+        self.assertIn("hill", self.kinds(res))
+        self.assertNotIn("beach", self.kinds(res))
 
 
 if __name__ == "__main__":
