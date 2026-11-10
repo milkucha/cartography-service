@@ -51,6 +51,7 @@ Last-seen map (per-agent frozen views, see ``store_view``):
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import sqlite3
@@ -825,6 +826,82 @@ class MapStore:
                     merged[str(name)] = max(0, int(value))
                 except (TypeError, ValueError):
                     continue
+
+    # ------------------------------------------------------------ bot chunks
+    @staticmethod
+    def _canonical(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+    @classmethod
+    def _same_bot_payload(cls, data, clean) -> bool:
+        return (
+            cls._canonical(data.get("surface")) == cls._canonical(clean["surface"])
+            and cls._canonical(data.get("composition")) == cls._canonical(clean["composition"])
+        )
+
+    @staticmethod
+    def _validate_bot_record(record):
+        if not isinstance(record, dict):
+            return None
+        try:
+            cx, cz = int(record["cx"]), int(record["cz"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        surface = record.get("surface")
+        composition = record.get("composition")
+        if not isinstance(surface, dict) or not isinstance(composition, dict):
+            return None
+        clean_surface = {}
+        for name in (
+            "y", "materials", "ground_y", "ground_materials", "water",
+            "terrain_y", "terrain_materials",
+        ):
+            arr = surface.get(name)
+            if not isinstance(arr, list) or len(arr) != 256:
+                return None
+            clean_surface[name] = list(arr)
+        clean_surface["water"] = [bool(v) for v in clean_surface["water"]]
+        return {
+            "cx": cx, "cz": cz,
+            "surface": clean_surface,
+            "composition": composition,
+        }
+
+    def apply_bot_chunk(self, agent, dimension, record):
+        """Replace one chunk from a bot-forwarded payload (``POST /chunk_raw``).
+
+        Modelled on :meth:`apply_snapshot`: the chunk keeps its tier, per-agent
+        frozen views are preserved, and the revision/generation only change when
+        the payload differs from what is stored.  Unchanged re-forwards (two
+        bots, or a chunk re-sent after underground changes) cost nothing.
+        Returns ``True`` / ``"unchanged"`` / ``"ignored"`` / ``False``.
+        """
+        if not is_overworld(dimension):
+            return "ignored"
+        clean = self._validate_bot_record(record)
+        if clean is None:
+            return False
+        key = (clean["cx"], clean["cz"])
+        data = self._acquire(key)
+        changed = False
+        with self._lock:
+            data = self._hot.get(key) or self._warm.get(key) or data
+            changed = not self._same_bot_payload(data, clean)
+            if changed:
+                self._preserve(key, data)
+                data["surface"] = {
+                    name: list(arr) for name, arr in clean["surface"].items()
+                }
+                data["composition"] = copy.deepcopy(clean["composition"])
+                data["source"] = "bot"
+                self._commit(key, data, ("snap", {
+                    "cx": key[0], "cz": key[1],
+                    "surface": clean["surface"],
+                    "counts": (clean["composition"] or {}).get("counts"),
+                }))
+        # Same store method POST /seen uses: the chunk is seen and loaded now.
+        self.report_chunks(agent, [[key[0], key[1]]], None, dimension)
+        return True if changed else "unchanged"
 
     # ------------------------------------------------------- last-seen map: revisions
     def _next_rev(self) -> int:

@@ -26,3 +26,20 @@ def unpack_indices(data_longs, bits_per_entry: int, total_entries: int):
                 return indices
             indices.append((uval >> (i * bits_per_entry)) & mask)
     return indices
+
+
+def pack_indices(indices, bits_per_entry: int):
+    """Inverse of :func:`unpack_indices`; returns signed 64-bit longs for NBT."""
+    if bits_per_entry == 0:
+        return []
+    entries_per_long = 64 // bits_per_entry
+    mask = (1 << bits_per_entry) - 1
+    packed = []
+    for start in range(0, len(indices), entries_per_long):
+        value = 0
+        for slot, index in enumerate(indices[start:start + entries_per_long]):
+            value |= (int(index) & mask) << (slot * bits_per_entry)
+        if value >= 1 << 63:
+            value -= 1 << 64
+        packed.append(value)
+    return packed

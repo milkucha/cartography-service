@@ -1,15 +1,24 @@
 # Topography Service
 
 Python map service for Mindcraft topography. Loads a Minecraft save, keeps a tiered world model
-(hot/warm in memory, cold in SQLite), applies live block-change diffs from the Fabric plugin, and
-serves compact JSON queries to the agent.
+(hot/warm in memory, cold in SQLite), applies live block-change diffs from the Fabric plugin **or
+chunk data forwarded by a Mindcraft bot**, and serves compact JSON queries to the agent.
 
 Standard library only — Python 3.10+ is the only requirement.
 
 ## Run
 
+With a save (the plugin or the bot can feed changes):
+
 ```powershell
 python main.py --world "C:\path\to\server\world" --host 127.0.0.1 --port 8090
+```
+
+Without a save — the bot fills the map over `POST /chunk_raw`:
+
+```powershell
+python main.py --name survival1 --host 127.0.0.1 --port 8090
+# ...or: $env:TOPOGRAPHY_NAME="survival1"; python main.py
 ```
 
 Options (or the matching environment variable):
@@ -17,14 +26,19 @@ Options (or the matching environment variable):
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
 | `--world` | `TOPOGRAPHY_WORLD` | `world` | World/save folder containing `region/` |
+| `--name` | `TOPOGRAPHY_NAME` | — | Save-less world identity: uses `maps/<name>.db`. Does not require a save; `--world` still applies if given |
 | `--host` | `TOPOGRAPHY_HOST` | `127.0.0.1` | Bind address |
 | `--port` | `TOPOGRAPHY_PORT` | `8090` | HTTP port |
-| `--db` | `TOPOGRAPHY_DB` | `maps/<level>-<worldid>.db` | SQLite store path. Default is one database per world (next to `main.py`), so chunk caches and per-agent seen ledgers never mix between worlds. Falls back to `map_store.db` when there is no readable save. |
+| `--db` | `TOPOGRAPHY_DB` | `maps/<level>-<worldid>.db` | SQLite store path. Wins over `--name`. Default is one database per world (next to `main.py`), so chunk caches and per-agent seen ledgers never mix between worlds. Falls back to `map_store.db` when there is no readable save. |
+| `--token` | `TOPOGRAPHY_TOKEN` | — | Shared bearer token (`Authorization: Bearer ...`). Mandatory when `--host` is not loopback; the service refuses to start otherwise. Loopback without a token is unchanged |
 | `--preload` | `TOPOGRAPHY_PRELOAD` | off | Decode every chunk at startup |
 | `--preload-limit` | `TOPOGRAPHY_PRELOAD_LIMIT` | `0` | Max chunks to preload (0 = all) |
 
-If no `region/` folder is found, the service starts in **diff-only mode**: it still accepts live
-changes from the plugin, but cannot answer queries for unvisited areas until they arrive.
+DB path precedence: `--db` > `--name` > save-derived `maps/<level>-<worldid>.db` > `map_store.db`.
+
+If no `region/` folder is found, the service starts in **bot-fed / diff-only mode**: it still accepts
+`POST /chunk_raw` (bot) and `/diff` + `/chunk_snapshot` (plugin), but cannot answer queries for
+unvisited areas until they arrive. `/survey` answers `{"unavailable": "no save"}` in that mode.
 
 Chunks are otherwise loaded lazily from the save on first query, so preloading is only useful for
 small worlds or benchmarks.
@@ -36,11 +50,36 @@ Full request/response schemas and the diff contract:
 - Repo contract: [`../CONTRACT.md`](../CONTRACT.md)
 - Endpoints: `/health`, `/perception`, `/topography`, `/area_composition`, `/shoreline`, `/recall`,
   `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/landforms`, `/survey`, `/route`, `/seen_stats`, and
-  `POST /diff`, `POST /chunk_snapshot`, `POST /position`, `POST /seen`.
+  `POST /diff`, `POST /chunk_snapshot`, `POST /chunk_raw`, `POST /position`, `POST /seen`.
 - `terrain_y` / `terrain_materials` (per column) are the topmost *natural ground-forming* block
   (grass, dirt, sand, gravel, stone family, ores, snow, ...), scanning down past roofs, floors,
   decks, logs, leaves, plants and liquids. The whitelist lives in `terrain_rules.py` and is mirrored
   in the plugin (`tools/check_terrain_rules_sync.py` fails if they drift).
+
+### Bot-fed ingestion (`POST /chunk_raw`)
+
+Mindcraft forwards loaded chunks with name palettes plus packed index arrays. The service rebuilds
+the Anvil-shaped root (`bot_chunk.py`), runs the same `decode_surface` / `analyze_chunk` /
+`build_chunk_record` path as a save load, and stores the record with `source: "bot"`. A bot chunk is
+treated exactly like a plugin `POST /chunk_snapshot`: it replaces the chunk surface and composition,
+never promotes the chunk to a hotter tier, and a newer save revalidates it with later overlays
+replayed. Unchanged re-forwards (two bots, or a resend after underground changes) are counted as
+`unchanged` and bump nothing. Every accepted chunk also marks the chunk seen **and loaded** for the
+sending agent (same store method as `POST /seen`), so per-agent gating and last-seen views work.
+
+The heightmap is rebuilt as `WORLD_SURFACE` from the decoded blocks. A save stores
+`MOTION_BLOCKING`; on columns topped by non-solid blocks the lowest counted section can therefore
+differ by one. The parity test (`tests/test_bot_chunk.py`) holds exactly on the synthetic world.
+
+Limits (400): more than 16 chunks per request, more than 64 sections per chunk, a palette over 4096
+entries, a body over 4 MB after decompression, an unknown `format`, or a `data` length that does not
+match `bits`. Non-Overworld dimensions are accepted and ignored. `Content-Encoding: gzip` is
+supported. `/survey` needs the save's 3D sections: without a save it answers
+`{"unavailable": "no save"}`.
+
+Authentication: when `--token` / `TOPOGRAPHY_TOKEN` is set, every request needs
+`Authorization: Bearer <token>` (401 otherwise). A non-loopback bind without a token is refused at
+startup.
 
 ## Settlements, survey and the seen ledger
 
@@ -48,7 +87,7 @@ Full request/response schemas and the diff contract:
 |----------|---------|
 | `GET /settlements?x=&z=&radius=96&agent=` | Detect settlements/outposts from cached surface data (radius 16..256, max 8 results, stable `id`). |
 | `GET /landforms?x=&z=&radius=128&agent=` | Named landforms (cliff, canyon, hill, mountain, ridge, plateau, valley, plain, lake, river, ocean, beach, island) from `terrain_y`, terrain materials and water flags: kind, direction/distance to the nearest point, y range, representative x/z, size, cliff facing, canyon/valley depth, `partial`. Radius 16..256, max 12 results. Also returned as `landforms` in `/perception`. |
-| `GET /survey?x1=&z1=&x2=&z2=&agent=` | Architectural digest of a bbox (max 160x160 blocks / 400 chunks, else 400): buildings, material palette by role, dimensions, landmarks, `summary`. |
+| `GET /survey?x1=&z1=&x2=&z2=&agent=` | Architectural digest of a bbox (max 160x160 blocks / 400 chunks, else 400): buildings, material palette by role, dimensions, landmarks, `summary`. Needs the save's sections; without a save it answers `{"unavailable":"no save"}`. |
 | `GET /route?x=&z=&x2=&z2=&agent=` | Long-range route over every chunk the agent has seen (coarse 4-block grid A*, bounded by nodes/time/distance): waypoints marked bend / shore / crest / path / bridge_start / bridge_deck / bridge_end / leg / target / frontier, bridges (straight narrow built strip with walkable land at both ends, detected from columns; piers rejected), `status` complete or partial (`unexplored`, `limit`, `distance`, `blocked`). `agent` is required. |
 | `POST /seen` `{"agent","dimension","chunks":[[cx,cz],...],"unloaded":[[cx,cz],...],"replace":false}` | Record chunks an agent has loaded (`chunks`) and no longer has loaded (`unloaded`), max 5000 per list; both count as seen. `unloaded` / `replace` switch the agent to frozen views (see "Last-seen map"); `replace: true` means `chunks` is the agent's complete loaded set (heartbeat/resync). Old clients sending only `chunks` still work and stay live. Non-overworld => `{"accepted":0,"ignored":n}`. |
 | `GET /seen_stats?agent=` | `{"agent","chunks","first_seen","last_seen"}`. |
@@ -119,6 +158,7 @@ The suite builds a synthetic coast world in a temp directory, so it needs no Min
 | `map_store.py` | Hot/warm tiers, SQLite cold tier, diff application |
 | `topography.py` | Heightmaps, shoreline, composition, recall |
 | `composition.py` | Block classification and indicators |
+| `bot_chunk.py` | `POST /chunk_raw` payload → Anvil-shaped root (name palettes, packed indices, WORLD_SURFACE heightmap) |
 | `mc_nbt.py`, `region.py`, `palette.py` | Anvil region / NBT / palette decoders |
 | `mc_blocks.py` | Block classification tables |
 | `landforms.py` | Landform classifier (thresholds at top of file) |

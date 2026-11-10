@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import gzip
+import hmac
 import json
 import logging
 import random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import bot_chunk
+import composition
 import landforms
+import loader
 import map_store
 import perception
 import prefetch
@@ -25,22 +30,26 @@ MAX_RADIUS = 256
 MAX_COORD = 30_000_000
 MAX_LINE_LENGTH = 4096
 MAX_BODY_BYTES = 1_000_000
+MAX_CHUNK_RAW_BYTES = 4_000_000
+MAX_CHUNK_RAW_COMPRESSED = 16_000_000
 MAX_PERCEPTION_SIZE = 32
 MAX_PERCEPTION_CHUNKS = 1024
 DEFAULT_PERCEPTION_SIZE = 16
 
 
 class TopographyAPI:
-    def __init__(self, store, host: str = "127.0.0.1", port: int = 8090, prefetcher=None):
+    def __init__(self, store, host: str = "127.0.0.1", port: int = 8090, prefetcher=None, token=None):
         self.store = store
         self.host = host
         self.port = port
+        self.token = token or None
         self.server: ThreadingHTTPServer | None = None
         self.prefetcher = prefetcher or prefetch.PrefetchWorker(store)
 
     def make_handler(self):
         store = self.store
         prefetcher = self.prefetcher
+        token = self.token
 
         class Handler(BaseHTTPRequestHandler):
             server_version = "TopographyService/1.0"
@@ -60,7 +69,7 @@ class TopographyAPI:
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
                 self.end_headers()
                 if body:
                     self.wfile.write(body)
@@ -68,10 +77,18 @@ class TopographyAPI:
             def _error(self, status: int, message: str):
                 self._send(status, {"error": message})
 
+            def _authorized(self):
+                if not token:
+                    return True
+                header = self.headers.get("Authorization") or ""
+                return hmac.compare_digest(header, f"Bearer {token}")
+
             def do_OPTIONS(self):
                 self._send(204, b"", "text/plain")
 
             def do_GET(self):
+                if not self._authorized():
+                    return self._error(401, "Unauthorized")
                 parsed = urlparse(self.path)
                 params = parse_qs(parsed.query)
                 try:
@@ -115,17 +132,28 @@ class TopographyAPI:
 
             def do_POST(self):
                 parsed = urlparse(self.path)
-                if parsed.path not in ("/diff", "/position", "/chunk_snapshot", "/seen"):
+                if parsed.path not in ("/diff", "/position", "/chunk_snapshot", "/seen", "/chunk_raw"):
                     return self._error(404, f"Unknown endpoint {parsed.path}")
+                if not self._authorized():
+                    return self._error(401, "Unauthorized")
+                raw_endpoint = parsed.path == "/chunk_raw"
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
                 except ValueError:
                     return self._error(400, "Invalid Content-Length")
                 if length <= 0:
                     return self._error(400, "Empty body")
-                if length > MAX_BODY_BYTES:
+                if length > (MAX_CHUNK_RAW_COMPRESSED if raw_endpoint else MAX_BODY_BYTES):
                     return self._error(413, "Body too large")
                 raw = self.rfile.read(length)
+                if raw_endpoint:
+                    if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
+                        try:
+                            raw = gzip.decompress(raw)
+                        except OSError as exc:
+                            return self._error(400, f"Invalid gzip body: {exc}")
+                    if len(raw) > MAX_CHUNK_RAW_BYTES:
+                        return self._error(413, "Body too large")
                 try:
                     payload = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -136,6 +164,8 @@ class TopographyAPI:
                     return self._chunk_snapshot(payload)
                 if parsed.path == "/seen":
                     return self._seen(payload)
+                if raw_endpoint:
+                    return self._chunk_raw(payload)
                 return self._diff(payload)
 
             # ------------------------------------------------------- endpoints
@@ -178,6 +208,57 @@ class TopographyAPI:
                     body["ignored"] = ignored
                 self._send(200, body)
 
+            def _chunk_raw(self, payload):
+                """Bot-fed chunk ingestion: name palettes + packed indices (CONTRACT.md)."""
+                if not isinstance(payload, dict):
+                    return self._error(400, "Expected a JSON object")
+                agent = str(payload.get("agent") or "").strip()[:64]
+                if not agent:
+                    return self._error(400, "Missing 'agent'")
+                if payload.get("format") != bot_chunk.FORMAT:
+                    return self._error(400, f"Unsupported format {payload.get('format')!r}")
+                chunks = payload.get("chunks")
+                if not isinstance(chunks, list):
+                    return self._error(400, "Expected 'chunks': [...]")
+                if len(chunks) > bot_chunk.MAX_CHUNKS:
+                    return self._error(
+                        400, f"More than {bot_chunk.MAX_CHUNKS} chunks in one request"
+                    )
+                dimension = payload.get("dimension")
+                if not map_store.is_overworld(dimension):
+                    return self._send(200, {
+                        "accepted": 0, "unchanged": 0, "rejected": 0,
+                        "ignored": len(chunks),
+                    })
+                accepted = unchanged = rejected = 0
+                for chunk in chunks:
+                    try:
+                        cx, cz, root = bot_chunk.to_root(chunk)
+                    except (bot_chunk.PayloadError, TypeError, ValueError):
+                        rejected += 1
+                        continue
+                    try:
+                        surface = loader.decode_surface(root)
+                        stats = composition.analyze_chunk(root, cx, cz) or {}
+                        record = loader.build_chunk_record(
+                            cx, cz, surface, stats, source="bot"
+                        )
+                    except Exception:  # pragma: no cover - defensive
+                        log.exception("Failed to decode a bot chunk (%s, %s)", cx, cz)
+                        rejected += 1
+                        continue
+                    result = store.apply_bot_chunk(agent, dimension, record)
+                    if result is True:
+                        accepted += 1
+                    elif result == "unchanged":
+                        unchanged += 1
+                    else:
+                        rejected += 1
+                self._send(200, {
+                    "accepted": accepted, "unchanged": unchanged,
+                    "rejected": rejected, "ignored": 0,
+                })
+
             def _seen_stats(self, params):
                 agent = (params.get("agent") or [""])[0].strip()
                 if not agent:
@@ -215,6 +296,8 @@ class TopographyAPI:
                 self._send(200, result)
 
             def _survey(self, params):
+                if not getattr(store.loader, "available", False):
+                    return self._send(200, {"unavailable": "no save"})
                 target = self._target(params)
                 result = survey.survey(
                     target, _int_param(params, "x1"), _int_param(params, "z1"),

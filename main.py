@@ -10,6 +10,7 @@ decode every chunk up front (only sensible for small test worlds).
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import logging
 import os
 import re
@@ -52,6 +53,22 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--name",
+        default=os.environ.get("TOPOGRAPHY_NAME"),
+        help=(
+            "World name for save-less operation: uses maps/<name>.db. The bot can fill the map "
+            "over POST /chunk_raw without a save folder. --db wins when both are given"
+        ),
+    )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("TOPOGRAPHY_TOKEN"),
+        help=(
+            "Shared bearer token required on every request (Authorization: Bearer ...). "
+            "Mandatory when --host is not loopback; loopback without a token keeps working"
+        ),
+    )
+    parser.add_argument(
         "--preload",
         action="store_true",
         default=os.environ.get("TOPOGRAPHY_PRELOAD", "").lower() in ("1", "true", "yes"),
@@ -82,6 +99,22 @@ def default_db_path(chunk_loader) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps", f"{slug[:40]}-{world_id[:8]}.db")
 
 
+def named_db_path(name: str) -> str:
+    """Save-less world identity: ``maps/<name>.db`` next to this file."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name).strip()).strip("._")[:64] or "world"
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps", f"{slug}.db")
+
+
+def is_loopback(host: str) -> bool:
+    host = (host or "").strip().lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def preload(store, limit: int = 0):
     if store.loader is None or not store.loader.available:
         log.warning("Preload requested but no readable world save was found")
@@ -107,6 +140,13 @@ def main(argv=None):
     )
     args = build_parser().parse_args(argv)
 
+    if not args.token and not is_loopback(args.host):
+        log.error(
+            "Refusing to start on non-loopback host %r without --token/TOPOGRAPHY_TOKEN",
+            args.host,
+        )
+        return 2
+
     chunk_loader = loader.ChunkLoader(args.world)
     if chunk_loader.available:
         indexed = chunk_loader.region_count
@@ -114,11 +154,13 @@ def main(argv=None):
     else:
         log.warning(
             "No region/ folder found under %r. Running in diff-only mode "
-            "(the Fabric plugin can still push live changes).",
+            "(the Fabric plugin or a bot-fed client can still push live changes).",
             args.world,
         )
 
-    db_path = args.db or default_db_path(chunk_loader)
+    db_path = args.db or (named_db_path(args.name) if args.name else default_db_path(chunk_loader))
+    if args.name:
+        log.info("World name: %s", args.name)
     log.info("Map database: %s", db_path)
     store = map_store.MapStore(db_path, chunk_loader)
     store.start_flush_thread()
@@ -126,7 +168,7 @@ def main(argv=None):
     if args.preload:
         preload(store, args.preload_limit)
 
-    api = TopographyAPI(store, args.host, args.port)
+    api = TopographyAPI(store, args.host, args.port, token=args.token)
     prefetcher = api.prefetcher
     prefetcher.start()
     server_thread = threading.Thread(target=api.serve_forever, name="topography-http", daemon=True)
