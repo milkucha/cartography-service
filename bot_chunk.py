@@ -33,6 +33,10 @@ class PayloadError(ValueError):
     """A chunk payload that cannot be decoded (answered with 400/rejected)."""
 
 
+class PayloadLimit(PayloadError):
+    """A payload above a documented limit (answered with 400)."""
+
+
 def _b64(value, what):
     if not isinstance(value, str):
         raise PayloadError(f"{what}: expected a base64 string")
@@ -46,7 +50,7 @@ def _names(entries, what):
     if not isinstance(entries, list) or not entries:
         raise PayloadError(f"{what}: expected a non-empty palette")
     if len(entries) > MAX_PALETTE:
-        raise PayloadError(f"{what}: palette over {MAX_PALETTE} entries")
+        raise PayloadLimit(f"{what}: palette over {MAX_PALETTE} entries")
     names = []
     for entry in entries:
         if not isinstance(entry, str) or not entry:
@@ -57,12 +61,12 @@ def _names(entries, what):
 
 def _packed_indices(data, bits, entries, what):
     if not isinstance(bits, int) or bits <= 0 or bits > 32:
-        raise PayloadError(f"{what}: bad bits")
+        raise PayloadLimit(f"{what}: bad bits")
     per_long = 64 // bits
     needed = (entries + per_long - 1) // per_long
     raw = _b64(data, what)
     if len(raw) != needed * 8:
-        raise PayloadError(f"{what}: data length does not match bits")
+        raise PayloadLimit(f"{what}: data length does not match bits")
     longs = []
     for i in range(needed):
         low = int.from_bytes(raw[i * 8:i * 8 + 4], "little")
@@ -74,7 +78,7 @@ def _packed_indices(data, bits, entries, what):
 def _u16_indices(data, entries, what):
     raw = _b64(data, what)
     if len(raw) != entries * 2:
-        raise PayloadError(f"{what}: data length does not match u16")
+        raise PayloadLimit(f"{what}: data length does not match u16")
     return [int.from_bytes(raw[i * 2:i * 2 + 2], "little") for i in range(entries)]
 
 
@@ -154,7 +158,7 @@ def to_root(chunk):
     if not isinstance(raw_sections, list):
         raise PayloadError("sections must be a list")
     if len(raw_sections) > MAX_SECTIONS:
-        raise PayloadError(f"more than {MAX_SECTIONS} sections in one chunk")
+        raise PayloadLimit(f"more than {MAX_SECTIONS} sections in one chunk")
 
     first_y = min_y >> 4
     section_count = height // 16

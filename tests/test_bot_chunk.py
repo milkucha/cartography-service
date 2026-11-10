@@ -332,6 +332,11 @@ class ChunkRawApiTests(unittest.TestCase):
         status, payload = self._post(body)
         self.assertEqual(status, 200)
         self.assertEqual(payload["rejected"], 1)
+        # a documented limit is a request error (400), not a per-chunk rejection
+        bad = _payload(self.root, 0, 0)
+        with_data = next(i for i, section in enumerate(bad["sections"]) if "data" in section)
+        bad["sections"][with_data]["data"] = "AAAA"
+        self.assertEqual(self._post(self._body([bad]))[0], 400)
 
     def test_non_overworld_ignored(self):
         body = self._body([_payload(self.root, 0, 0)])

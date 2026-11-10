@@ -234,6 +234,8 @@ class TopographyAPI:
                 for chunk in chunks:
                     try:
                         cx, cz, root = bot_chunk.to_root(chunk)
+                    except bot_chunk.PayloadLimit as exc:
+                        return self._error(400, str(exc))
                     except (bot_chunk.PayloadError, TypeError, ValueError):
                         rejected += 1
                         continue
