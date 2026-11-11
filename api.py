@@ -316,10 +316,17 @@ class TopographyAPI:
                     if not math.isfinite(shore_from) or shore_from < 0:
                         raise ValueError("Parameter 'shore_from' must be a non-negative number")
                 target = store_view.StoreView(store, agent[:64])
+                log.info("route plan from (%s, %s) to (%s, %s) for %s shore=%s shore_from=%s",
+                         coords["x"], coords["z"], coords["x2"], coords["z2"], agent[:64],
+                         shore, shore_from)
                 result = route.route(
                     target, coords["x"], coords["z"], coords["x2"], coords["z2"],
                     rng=rng, shore=shore, shore_from=shore_from,
                 )
+                log.info("route result %s/%s blocked_by=%s shore=%s wps=%s",
+                         result.get("status"), result.get("reason"), result.get("blocked_by"),
+                         (result.get("shore") or {}).get("side"),
+                         len(result.get("waypoints") or []))
                 self._send(200, result)
 
             def _survey(self, params):
