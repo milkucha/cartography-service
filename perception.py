@@ -138,7 +138,7 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
     if updated_at <= 0:
         updated_at = time.time()
 
-    return {
+    result = {
         "service": "topography",
         "center": {"x": x, "z": z},
         "size_chunks": size_chunks,
@@ -155,6 +155,14 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
         "updated_at": updated_at,
         "window_version": int(getattr(store, "generation", 0) or 0),
     }
+    if hasattr(store, "agent"):
+        try:
+            import overview
+            result["far"] = overview.far_features(store, x, z)
+        except Exception:  # pragma: no cover - defensive; the prompt must never break
+            log.exception("far-feature summary failed")
+            result["far"] = []
+    return result
 
 
 def _landforms(store, records, x, z):

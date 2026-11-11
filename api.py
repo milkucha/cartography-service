@@ -16,6 +16,7 @@ import composition
 import landforms
 import loader
 import map_store
+import overview
 import perception
 import prefetch
 import route
@@ -124,6 +125,8 @@ class TopographyAPI:
                         return self._survey(params)
                     if parsed.path == "/route":
                         return self._route(params)
+                    if parsed.path == "/overview":
+                        return self._overview(params)
                     return self._error(404, f"Unknown endpoint {parsed.path}")
                 except ValueError as exc:
                     return self._error(400, str(exc))
@@ -328,6 +331,15 @@ class TopographyAPI:
                     _int_param(params, "x2"), _int_param(params, "z2"),
                 )
                 self._send(200, result)
+
+            def _overview(self, params):
+                x = _int_param(params, "x")
+                z = _int_param(params, "z")
+                radius = _size_param(params, "radius", overview.DEFAULT_RADIUS,
+                                     overview.MAX_RADIUS, minimum=overview.MIN_RADIUS)
+                target = self._target(params)
+                self._send(200, overview.build(target, x, z, radius))
+
             def _health(self):
                 health = {
                     "status": "ok",

@@ -62,6 +62,7 @@ from collections import OrderedDict, deque
 from pathlib import Path
 
 import mc_blocks
+import overview
 import terrain_rules
 
 log = logging.getLogger("topography.store")
@@ -120,6 +121,18 @@ CREATE TABLE IF NOT EXISTS chunk_history (
     data BLOB NOT NULL,
     created_at REAL NOT NULL,
     PRIMARY KEY (cx, cz, revision)
+)
+"""
+SUMMARY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chunk_summary (
+    cx INTEGER NOT NULL, cz INTEGER NOT NULL, rev INTEGER NOT NULL,
+    known INTEGER NOT NULL,
+    water INTEGER NOT NULL,
+    h_min INTEGER, h_max INTEGER, h_sum INTEGER,
+    trees INTEGER NOT NULL,
+    built INTEGER NOT NULL,
+    cls TEXT,
+    PRIMARY KEY (cx, cz, rev)
 )
 """
 META_SCHEMA = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -215,6 +228,7 @@ class MapStore:
         self.world_id = self._loader_world_id()
         self._open_schema()
         self._init_last_seen()
+        self._backfill_summaries()
 
     def _loader_world_id(self):
         fn = getattr(self.loader, "world_id", None)
@@ -249,10 +263,12 @@ class MapStore:
             self.discarded_cold = row[0] if row else 0
             conn.execute("DROP TABLE chunks")
             conn.execute("DROP TABLE IF EXISTS chunk_history")  # its revisions belonged to the dropped rows
+            conn.execute("DROP TABLE IF EXISTS chunk_summary")  # ... and so did its summaries
             log.warning("Discarding %s cold chunk rows: %s", self.discarded_cold, reason)
         conn.execute(SCHEMA)
         conn.execute(SEEN_SCHEMA)
         conn.execute(HISTORY_SCHEMA)
+        conn.execute(SUMMARY_SCHEMA)
         # Last-seen columns are always added by ALTER (new and old databases take the same path;
         # existing rows are kept).
         self._add_column("chunks", "rev", "INTEGER NOT NULL DEFAULT 1")
@@ -1392,14 +1408,84 @@ class MapStore:
         }
 
     # --------------------------------------------------------------- cold tier
+    # ------------------------------------------------------------- summaries
+    @staticmethod
+    def _summary_values(summary):
+        return (summary["known"], summary["water"], summary["h_min"], summary["h_max"],
+                summary["h_sum"], summary["trees"], summary["built"], summary["cls"])
+
+    def _backfill_summaries(self):
+        """One pass at start-up: summarise chunk rows that have no summary at their revision."""
+        conn = self._conn
+        query = (
+            "SELECT c.cx, c.cz, COALESCE(c.rev, 1), c.surface_json FROM chunks c "
+            "WHERE NOT EXISTS (SELECT 1 FROM chunk_summary s "
+            "WHERE s.cx=c.cx AND s.cz=c.cz AND s.rev=COALESCE(c.rev, 1))"
+        )
+        count = 0
+        last = None
+        while True:
+            if last is None:
+                batch = conn.execute(query + " ORDER BY c.cx, c.cz LIMIT 500").fetchall()
+            else:
+                batch = conn.execute(
+                    query + " AND (c.cx > ? OR (c.cx = ? AND c.cz > ?)) "
+                            "ORDER BY c.cx, c.cz LIMIT 500",
+                    (last[0], last[0], last[1]),
+                ).fetchall()
+            if not batch:
+                break
+            rows = []
+            for cx, cz, rev, surface_json in batch:
+                try:
+                    summary = overview.summarize(json.loads(surface_json))
+                except Exception:
+                    log.exception("Could not summarise chunk (%s, %s) during backfill", cx, cz)
+                    continue
+                rows.append((cx, cz, rev) + self._summary_values(summary))
+            if rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO chunk_summary "
+                    "(cx, cz, rev, known, water, h_min, h_max, h_sum, trees, built, cls) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+                conn.commit()
+            count += len(rows)
+            last = (batch[-1][0], batch[-1][1])
+        if count:
+            log.info("Backfilled %s chunk summaries", count)
+
+    def summary_rows(self, cx1: int, cz1: int, cx2: int, cz2: int):
+        """``{(cx, cz): [(rev, summary), ...]}`` (revisions ascending) from one SELECT."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT cx, cz, rev, known, water, h_min, h_max, h_sum, trees, built, cls "
+                "FROM chunk_summary WHERE cx BETWEEN ? AND ? AND cz BETWEEN ? AND ? "
+                "ORDER BY cx, cz, rev",
+                (int(cx1), int(cx2), int(cz1), int(cz2)),
+            ).fetchall()
+        out = {}
+        for cx, cz, rev, *values in rows:
+            out.setdefault((cx, cz), []).append((rev, overview.summary_row(values)))
+        return out
+
+    def summaries(self, cx1: int, cz1: int, cx2: int, cz2: int):
+        """``{(cx, cz): summary}`` with the greatest revision of every chunk."""
+        return {key: revisions[-1][1]
+                for key, revisions in self.summary_rows(cx1, cz1, cx2, cz2).items()}
+
     def flush(self, force: bool = False):
         with self._lock:
             if not self._dirty:
                 return 0
             rows = []
+            summaries = []
+            prunes = []
             now = time.time()
             for (cx, cz), data in self._dirty.items():
                 data["updated_at"] = now
+                rev = data.get("rev") or 1
                 rows.append(
                     (
                         cx,
@@ -1409,9 +1495,17 @@ class MapStore:
                         now,
                         data.get("save_ts"),
                         data.get("loaded_at"),
-                        data.get("rev") or 1,
+                        rev,
                     )
                 )
+                try:
+                    summary = overview.summarize(data.get("surface") or {})
+                except Exception:
+                    log.exception("Could not summarise chunk (%s, %s); skipping it", cx, cz)
+                    continue
+                summaries.append((cx, cz, rev) + self._summary_values(summary))
+                keep = {rev} | {p[0] for p in self._pins.get((cx, cz), {}).values() if p[0]}
+                prunes.append(((cx, cz), tuple(sorted(keep))))
             self._dirty.clear()
             self._conn.executemany(
                 "INSERT INTO chunks (cx, cz, surface_json, composition_json, updated_at, "
@@ -1425,6 +1519,19 @@ class MapStore:
                 "rev=excluded.rev",
                 rows,
             )
+            if summaries:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO chunk_summary "
+                    "(cx, cz, rev, known, water, h_min, h_max, h_sum, trees, built, cls) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    summaries,
+                )
+            for (cx, cz), keep in prunes:
+                marks = ",".join("?" * len(keep))
+                self._conn.execute(
+                    f"DELETE FROM chunk_summary WHERE cx=? AND cz=? AND rev NOT IN ({marks})",
+                    (cx, cz, *keep),
+                )
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('rev_counter', ?)",
                 (str(self._rev_counter),),

@@ -107,6 +107,35 @@ class StoreView:
                     records.append(data)
         return records, missing
 
+    def summaries(self, cx1, cz1, cx2, cz2):
+        """Per-chunk overview summaries for chunks this agent has seen, at its last-seen revision."""
+        rows = self._store.summary_rows(cx1, cz1, cx2, cz2)
+        seen = self._seen()
+        out = {}
+        for key, revisions in rows.items():
+            if key not in seen:
+                continue
+            limit = None
+            if self._tracked and key not in self._loaded:
+                pin = self._store.pin_of(self.agent, key)
+                if pin is not None and pin[0] == 0:
+                    continue
+                if pin is not None:
+                    limit = pin[0]
+            chosen = None
+            for rev, summary in revisions:   # ascending
+                if limit is None or rev <= limit:
+                    chosen = summary
+                else:
+                    break
+            if chosen is not None:
+                out[key] = chosen
+        return out
+
+    def seen_chunks(self, cx1, cz1, cx2, cz2):
+        return sum(1 for cx, cz in self._seen()
+                   if int(cx1) <= cx <= int(cx2) and int(cz1) <= cz <= int(cz2))
+
 
 def unexplored_keys(store) -> set:
     """Chunks refused so far by a gated view (empty for a plain store)."""
