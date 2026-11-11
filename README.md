@@ -48,7 +48,7 @@ small worlds or benchmarks.
 Full request/response schemas and the diff contract:
 
 - Repo contract: [`../CONTRACT.md`](../CONTRACT.md)
-- Endpoints: `/health`, `/perception`, `/topography`, `/area_composition`, `/shoreline`, `/recall`,
+- Endpoints: `/health`, `/perception`, `/overview`, `/topography`, `/area_composition`, `/shoreline`, `/recall`,
   `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/landforms`, `/survey`, `/route`, `/seen_stats`, and
   `POST /diff`, `POST /chunk_snapshot`, `POST /chunk_raw`, `POST /position`, `POST /seen`.
 - `terrain_y` / `terrain_materials` (per column) are the topmost *natural ground-forming* block
@@ -88,7 +88,7 @@ startup.
 | `GET /settlements?x=&z=&radius=96&agent=` | Detect settlements/outposts from cached surface data (radius 16..256, max 8 results, stable `id`). |
 | `GET /landforms?x=&z=&radius=128&agent=` | Named landforms (cliff, canyon, hill, mountain, ridge, plateau, valley, plain, lake, river, ocean, beach, island) from `terrain_y`, terrain materials and water flags: kind, direction/distance to the nearest point, y range, representative x/z, size, cliff facing, canyon/valley depth, `partial`. Radius 16..256, max 12 results. Also returned as `landforms` in `/perception`. |
 | `GET /survey?x1=&z1=&x2=&z2=&agent=` | Architectural digest of a bbox (max 160x160 blocks / 400 chunks, else 400): buildings, material palette by role, dimensions, landmarks, `summary`. Needs the save's sections; without a save it answers `{"unavailable":"no save"}`. |
-| `GET /route?x=&z=&x2=&z2=&agent=` | Long-range route over every chunk the agent has seen (coarse 4-block grid A*, bounded by nodes/time/distance): waypoints marked bend / shore / crest / path / bridge_start / bridge_deck / bridge_end / leg / target / frontier, bridges (straight narrow built strip with walkable land at both ends, detected from columns; piers rejected), `status` complete or partial (`unexplored`, `limit`, `distance`, `blocked`). `agent` is required. |
+| `GET /route?x=&z=&x2=&z2=&agent=[&seed=][&shore=auto|left|right][&shore_from=]` | Long-range route over every chunk the agent has seen (coarse 4-block grid A*, bounded by nodes/time/distance): waypoints marked bend / shore / shore_follow / crest / path / bridge_start / bridge_deck / bridge_end / leg / target / frontier, bridges (straight narrow built strip with walkable land at both ends, detected from columns; piers rejected), `status` complete or partial (`unexplored`, `limit`, `distance`, `water`, `blocked`), and `blocked_by` (`unexplored` / `water` / `terrain`) on partial results. A route may cross at most `MAX_WATER_RUN = 2` consecutive water cells; wider water is impassable. `shore=` lets the client follow a shoreline (`shore_follow` waypoints plus a `shore` object with side/cells/length/end); `shore_from` is the straight-line distance at the start of the current shore episode and ends it once real progress is available. `agent` is required. |
 | `POST /seen` `{"agent","dimension","chunks":[[cx,cz],...],"unloaded":[[cx,cz],...],"replace":false}` | Record chunks an agent has loaded (`chunks`) and no longer has loaded (`unloaded`), max 5000 per list; both count as seen. `unloaded` / `replace` switch the agent to frozen views (see "Last-seen map"); `replace: true` means `chunks` is the agent's complete loaded set (heartbeat/resync). Old clients sending only `chunks` still work and stay live. Non-overworld => `{"accepted":0,"ignored":n}`. |
 | `GET /seen_stats?agent=` | `{"agent","chunks","first_seen","last_seen"}`. |
 
@@ -112,6 +112,23 @@ Gating: every terrain GET (`/perception`, `/topography`, `/area_composition`, `/
 `/recall` give 404). Gating is implemented once in `store_view.StoreView`. Without `agent=`
 behaviour is unchanged. The ledger is the `seen` SQLite table (schema v3; v2 databases migrate
 in place without losing chunk rows).
+
+### Long-range overview (`GET /overview`)
+
+`GET /overview?x=&z=&radius=&agent=&dimension=` summarises everything the agent has seen within
+`radius` blocks (256..4096, default 2048) at a flat cost. It never reads, decodes or promotes a chunk:
+every chunk record writes a small summary into the additive `chunk_summary` table at flush time
+(`overview.summarize`: known/water columns, natural-ground min/max/sum, tree and built columns, the
+dominant land class), and an existing database is backfilled once at startup. Reads go through
+`StoreView` so only seen chunks appear, and a tracked agent's unloaded chunks use the summary at its
+pinned `rev` (never newer than it last saw).
+
+The response has coarse `cells` (one per 45-degree sector and distance ring, with coverage, water
+fraction, land class, y range, built count and `partial`), up to 8 `features` (`high_ground`, `water`
+bodies with `open`, `built` areas), `seen_chunks`, `summarised_chunks`, `window_version`, and
+`trimmed` when the outermost ring was dropped to stay under 6000 bytes. `/perception` adds a `far`
+list of the first overview features when `agent=` is given. The cache is a 32-entry LRU keyed by
+agent, store generation, 64-block cell and radius.
 
 ### Last-seen map
 
@@ -163,6 +180,7 @@ The suite builds a synthetic coast world in a temp directory, so it needs no Min
 | `mc_blocks.py` | Block classification tables |
 | `landforms.py` | Landform classifier (thresholds at top of file) |
 | `route.py` | `/route` planner (costs and limits at top of file) |
+| `overview.py` | `/overview`: per-chunk summaries, sectors/rings, features, cache (limits at top of file) |
 | `settlements.py`, `survey.py`, `store_view.py` | Settlement detection, survey digest, per-agent gated store view |
 
 `mc_nbt.py`, `region.py`, `palette.py`, and `composition.py` are adapted from the local
