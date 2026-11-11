@@ -54,6 +54,30 @@ def with_deck(base, x1=-20, x2=20, zs=(-1, 0, 1), y=LAND + 1):
     return col
 
 
+def water_at(x, z):
+    return (WATER_Y, "minecraft:water", BED, "minecraft:sand", True)
+
+
+def two_cell_stream(x, z):
+    """An 8-block stream: exactly two 4-block cells of water."""
+    return water_at(x, z) if -4 <= x <= 3 else flat(x, z)
+
+
+def ocean_strip(x, z):
+    """Water from x=-20..20 for every z: no land way round, all of it seen."""
+    return water_at(x, z) if -20 <= x <= 20 else flat(x, z)
+
+
+def north_water(x, z):
+    """A straight east-west shore at z=0, water to the north (z<0)."""
+    return water_at(x, z) if z < 0 else flat(x, z)
+
+
+def east_water(x, z):
+    """Land up to x=40, then water: the bot starts far from the shore."""
+    return water_at(x, z) if x >= 40 else flat(x, z)
+
+
 def make_rec(cx, cz, colfn):
     ys, mats, tys, tms, water = [], [], [], [], []
     for lz in range(16):
@@ -128,8 +152,117 @@ class LakeTests(RouteCase):
 
     def test_target_in_lake_still_reports_it(self):
         res = self.plan(self.make(with_lake(flat)), (-60, 0), (0, 0))
-        self.assertEqual(res["status"], "complete")
+        self.assertNotEqual(res["status"], "complete")   # a wide lake is not a swimming pool
+        self.assertEqual(res["status"], "partial")
+        self.assertEqual(res["blocked_by"], "water")
+        self.assertEqual(res["reason"], "water")
         self.assertEqual(res["target"]["y"], WATER_Y)
+
+
+class WaterRunTests(RouteCase):
+    def test_two_cell_stream_is_crossed(self):
+        res = self.plan(self.make(two_cell_stream), (-40, 0), (40, 0))
+        self.assertEqual(res["status"], "complete")
+        self.assertEqual(res["waypoints"][-1]["kind"], "target")
+        swims = [w["swim"] for w in res["waypoints"] if w.get("swim")]
+        self.assertEqual(swims, [8])   # the stream is one 8-block crossing, not a detour
+        self.assertNotIn("blocked_by", res)
+
+    def test_lake_with_a_land_way_round_is_complete_and_dry(self):
+        res = self.plan(self.make(with_lake(flat)), (-60, 0), (60, 0))
+        self.assertEqual(res["status"], "complete")
+        self.assertFalse(any(w.get("swim") for w in res["waypoints"]))
+        self.assertNotIn("blocked_by", res)
+        for w in res["waypoints"]:
+            self.assertFalse(self.colfn(w["x"], w["z"])[4], w)
+
+    def test_lake_with_no_known_way_round_is_water_blocked(self):
+        res = self.plan(self.make(ocean_strip), (-60, 0), (60, 0))
+        self.assertEqual(res["status"], "partial")
+        self.assertEqual(res["blocked_by"], "water")
+        self.assertEqual(res["reason"], "water")
+        self.assertNotIn("shore", res)
+
+    def test_water_blocked_but_best_is_next_to_an_unseen_chunk(self):
+        store = self.make(ocean_strip)
+        seen = [(cx, cz) for cx in range(-10, 11) for cz in range(-10, 11) if cx != -3]
+        store.mark_seen("other", [list(k) for k in seen], None)
+        res = route.route(store_view.StoreView(store, "other"), -60, 0, 60, 0,
+                          rng=random.Random(1))
+        self.assertEqual(res["status"], "partial")
+        self.assertEqual(res["blocked_by"], "unexplored")
+        self.assertEqual(res["reason"], "unexplored")
+
+    def test_bridge_over_a_wide_lake_stays_complete(self):
+        res = self.plan(self.make(with_deck(with_lake(flat))), (-60, 0), (60, 0))
+        self.assertEqual(res["status"], "complete")
+        self.assertIn("bridge_end", self.kinds(res))
+        self.assertNotIn("blocked_by", res)
+
+
+class ShoreTests(RouteCase):
+    def test_left_and_right_follow_the_shore(self):
+        store = self.make(north_water)
+        left = self.plan(store, (0, 2), (0, -100), shore="left")
+        self.assertEqual(left["status"], "partial")
+        self.assertEqual(left["reason"], "water")
+        self.assertEqual(left["blocked_by"], "water")
+        self.assertEqual(left["shore"]["side"], "left")
+        self.assertTrue(left["waypoints"])
+        self.assertTrue(all(w["kind"] == "shore_follow" for w in left["waypoints"]))
+        self.assertGreater(left["waypoints"][-1]["x"], left["waypoints"][0]["x"])
+        self.assertFalse(any(self.colfn(w["x"], w["z"])[4] for w in left["waypoints"]))
+        right = self.plan(store, (0, 2), (0, -100), shore="right")
+        self.assertEqual(right["shore"]["side"], "right")
+        self.assertTrue(all(w["kind"] == "shore_follow" for w in right["waypoints"]))
+        self.assertLess(right["waypoints"][-1]["x"], right["waypoints"][0]["x"])
+        self.assertFalse(any(self.colfn(w["x"], w["z"])[4] for w in right["waypoints"]))
+
+    def test_auto_picks_the_side_that_ends_nearer_the_target(self):
+        res = self.plan(self.make(north_water), (0, 2), (8, -100), shore="auto")
+        self.assertEqual(res["shore"]["side"], "left")
+        self.assertGreater(res["waypoints"][-1]["x"], 0)
+
+    def test_trace_stops_at_the_frontier(self):
+        store = self.make(north_water)
+        seen = [(cx, cz) for cx in range(-1, 1) for cz in range(-10, 11)]
+        store.mark_seen("other", [list(k) for k in seen], None)
+        res = route.route(store_view.StoreView(store, "other"), 0, 2, 0, -100,
+                          rng=random.Random(1), shore="left")
+        self.assertEqual(res["shore"]["end"], "frontier")
+        self.assertTrue(res["waypoints"])
+        for w in res["waypoints"]:
+            self.assertLess(w["x"] >> 4, 1)
+
+    def test_trace_turns_a_convex_corner_with_water_on_the_same_hand(self):
+        def corner(x, z):
+            return water_at(x, z) if (z < 0 or x > 20) else flat(x, z)
+
+        store = self.make(corner)
+        grid = route.Grid(self.view(store))
+        start = route._find_shore(grid, (0, 0), route.SHORE_NEAR_CELLS)
+        self.assertIsNotNone(start)
+        cells, end = route._trace(grid, start, "left", (0, -100))
+        self.assertEqual(end, "step")
+        self.assertGreater(len(cells), 8)
+        self.assertGreaterEqual(max(c[0] for c in cells), 4)   # walked east to the corner
+        self.assertGreater(cells[-1][1], 8)                    # then turned south
+        last = cells[-1]
+        self.assertEqual(grid.cell(last[0] + 1, last[1])["kind"], "water")   # left of south is east
+
+    def test_shore_from_with_real_progress_returns_the_normal_partial(self):
+        store = self.make(north_water)
+        self.assertIn("shore", self.plan(store, (0, 2), (0, -100), shore="left", shore_from=110))
+        done = self.plan(store, (0, 2), (0, -100), shore="left", shore_from=140)
+        self.assertNotIn("shore", done)
+
+    def test_auto_far_from_the_shore_walks_to_it_first(self):
+        res = self.plan(self.make(east_water), (-60, 0), (100, 0), shore="auto")
+        self.assertEqual(res["status"], "partial")
+        self.assertNotIn("shore", res)
+        self.assertTrue(res["waypoints"])
+        self.assertEqual(res["waypoints"][-1]["kind"], "shore")
+        self.assertLess(res["waypoints"][-1]["x"], 40)
 
 
 class BridgeTests(RouteCase):
@@ -393,6 +526,45 @@ class HttpTests(RouteCase):
         self.assertEqual(status, 200)
         self.assertEqual(data["unavailable"], "dimension")
         self.assertNotIn("waypoints", data)
+
+    def test_shore_parameters(self):
+        self.assertEqual(self.get({"x": 0, "z": 2, "x2": 0, "z2": -100, "agent": "bot",
+                                   "shore": "diagonal"})[0], 400)
+        self.assertEqual(self.get({"x": 0, "z": 2, "x2": 0, "z2": -100, "agent": "bot",
+                                   "shore_from": "-1"})[0], 400)
+        self.assertEqual(self.get({"x": 0, "z": 2, "x2": 0, "z2": -100, "agent": "bot",
+                                   "shore_from": "abc"})[0], 400)
+
+
+class ShoreHttpTests(RouteCase):
+    def setUp(self):
+        store = self.make(north_water)
+        self.api = TopographyAPI(store, "127.0.0.1", 0)
+        import http.server
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.api.make_handler())
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (self.server.shutdown(), self.server.server_close()))
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def get(self, params):
+        try:
+            with urllib.request.urlopen(f"{self.base}/route?{urlencode(params)}") as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_shore_and_shore_from_round_trip(self):
+        base = {"x": 0, "z": 2, "x2": 0, "z2": -100, "agent": "bot"}
+        status, data = self.get({**base, "shore": "left"})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["shore"]["side"], "left")
+        status, data = self.get({**base, "shore": "auto"})
+        self.assertEqual(status, 200)
+        self.assertIn("shore", data)
+        status, data = self.get({**base, "shore": "left", "shore_from": 140})
+        self.assertEqual(status, 200)
+        self.assertNotIn("shore", data)
+
 
     def test_response_is_small(self):
         status, data = self.get({"x": -150, "z": 0, "x2": 150, "z2": 0, "agent": "bot"})

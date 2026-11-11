@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import math
 import random
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -297,8 +298,25 @@ class TopographyAPI:
                     raise ValueError(f"Coordinates must be within +-{MAX_COORD}")
                 seed = params.get("seed")
                 rng = random.Random(_int_param(params, "seed")) if seed else None
+                shore = (params.get("shore") or [None])[0]
+                if shore is not None:
+                    shore = str(shore).strip().lower()
+                    if shore not in ("auto", "left", "right"):
+                        raise ValueError("Parameter 'shore' must be auto, left or right")
+                shore_from = None
+                raw_from = (params.get("shore_from") or [None])[0]
+                if raw_from is not None:
+                    try:
+                        shore_from = float(raw_from)
+                    except (TypeError, ValueError):
+                        raise ValueError("Parameter 'shore_from' must be a non-negative number")
+                    if not math.isfinite(shore_from) or shore_from < 0:
+                        raise ValueError("Parameter 'shore_from' must be a non-negative number")
                 target = store_view.StoreView(store, agent[:64])
-                result = route.route(target, coords["x"], coords["z"], coords["x2"], coords["z2"], rng=rng)
+                result = route.route(
+                    target, coords["x"], coords["z"], coords["x2"], coords["z2"],
+                    rng=rng, shore=shore, shore_from=shore_from,
+                )
                 self._send(200, result)
 
             def _survey(self, params):

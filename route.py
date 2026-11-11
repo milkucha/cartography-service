@@ -24,6 +24,7 @@ import math
 import random
 import time
 import zlib
+from collections import deque
 from statistics import median
 
 import perception
@@ -41,6 +42,7 @@ MIN_KNOWN_COLUMNS = 8        # of 16 columns for a cell to count as known
 
 # costs
 WATER_COST = 5.0
+MAX_WATER_RUN = 2            # consecutive water cells allowed; wider water is impassable
 ROUGH_COST = 0.25            # extra multiplier per block of relief above 2 inside a cell
 CLIMB_COST = 1.5             # per block of height step above 1 between neighbouring cells
 BUILT_COST = 2.5
@@ -64,6 +66,15 @@ BRIDGE_SNAP = 4
 # waypoints
 JITTER_RADIUS = 2.5          # columns from the cell centre a waypoint may be moved
 CREST_RISE = 6
+
+# shore-following (the client can follow a shoreline when water blocks the way)
+SHORE_STEP_CELLS = 16        # cells traced per request (64 blocks of lookahead)
+SHORE_WP_EVERY = 4           # a shore_follow waypoint every 4 cells (16 blocks), plus the last cell
+SHORE_NEAR_CELLS = 3         # how close the bot must be to the shore before tracing starts (auto)
+SHORE_SEEK_CELLS = 6         # how far to look for a shore cell around the bot (left/right)
+SHORE_EXIT_GAIN = 32         # blocks closer to the target than shore_from that end the episode
+SHORE_TIE = 4                # blocks: closer than this, the two sides count as a tie
+DIRS = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1)]   # clockwise from north (-Z)
 PATH_BLOCKS = frozenset({
     "minecraft:dirt_path", "minecraft:cobblestone", "minecraft:mossy_cobblestone",
     "minecraft:stone_bricks",
@@ -309,14 +320,21 @@ def _edge_cost(c1, c2, diagonal):
 
 
 def _search(grid, start, goal, bounds, now, deadline, max_nodes):
-    """Weighted A* over known cells. Returns (path|None, best_path, info)."""
+    """Weighted A* over known cells. Returns (path|None, best, info).
+
+    Nodes are ``(ci, cj, run)`` where ``run`` counts the consecutive water cells ending at that
+    cell: a route may cross at most :data:`MAX_WATER_RUN` of them in a row.
+    """
     ci0, cj0, ci1, cj1 = bounds
-    g = {start: 0.0}
+    sc = grid.cell(*start)
+    start_run = 1 if sc is not None and sc["kind"] == "water" else 0
+    start_node = (start[0], start[1], start_run)
+    g = {start_node: 0.0}
     parent = {}
-    heap = [(HEURISTIC_WEIGHT * HEURISTIC_SCALE * _octile(start, goal), 0.0, 0, start)]
+    heap = [(HEURISTIC_WEIGHT * HEURISTIC_SCALE * _octile(start, goal), 0.0, 0, start_node)]
     closed = set()
     counter = 0
-    best, best_h = start, _octile(start, goal)
+    best, best_h, best_node, best_g = start, _octile(start, goal), start_node, 0.0
     frontier = set()
     reason = None
     nodes = 0
@@ -326,11 +344,13 @@ def _search(grid, start, goal, bounds, now, deadline, max_nodes):
             continue
         closed.add(cur)
         nodes += 1
-        if cur == goal:
-            return _rebuild(parent, cur), cur, {"nodes": nodes, "reason": None, "frontier": frontier}
-        h = _octile(cur, goal)
-        if h < best_h:
-            best, best_h = cur, h
+        cell = (cur[0], cur[1])
+        run = cur[2]
+        if cell == goal:
+            return _rebuild(parent, cur), cell, {"nodes": nodes, "reason": None, "frontier": frontier}
+        h = _octile(cell, goal)
+        if h < best_h or (h == best_h and g[cur] < best_g):
+            best, best_h, best_node, best_g = cell, h, cur, g[cur]
         if nodes >= max_nodes:
             reason = "limit"
             break
@@ -340,35 +360,42 @@ def _search(grid, start, goal, bounds, now, deadline, max_nodes):
         if grid.limit_hit:
             reason = "limit"
             break
-        c1 = grid.cell(*cur)
+        c1 = grid.cell(*cell)
         for di, dj in _NEIGHBOURS:
-            nb = (cur[0] + di, cur[1] + dj)
-            if not (ci0 <= nb[0] <= ci1 and cj0 <= nb[1] <= cj1) or nb in closed:
+            nb = (cell[0] + di, cell[1] + dj)
+            if not (ci0 <= nb[0] <= ci1 and cj0 <= nb[1] <= cj1):
                 continue
             c2 = grid.cell(*nb)
             if c2 is None:
                 if not grid.known_chunk(nb[0] >> 2, nb[1] >> 2):
-                    frontier.add(cur)
+                    frontier.add(cell)
                 continue
             diagonal = di != 0 and dj != 0
-            if nb == goal and c2["kind"] != "lava":
-                # a goal in water/cliff/built cells is reachable: we report it, the bot decides
-                c2 = dict(c2, mult=c2["mult"] if c2["mult"] is not None else WATER_COST)
+            if nb == goal and c2["mult"] is None and c2["kind"] not in ("lava", "water"):
+                # a goal in a cliff/built cell is still reported (we do not enter wide water)
+                c2 = dict(c2, mult=1.0)
             if diagonal:
-                o1, o2 = grid.cell(cur[0] + di, cur[1]), grid.cell(cur[0], cur[1] + dj)
+                o1, o2 = grid.cell(cell[0] + di, cell[1]), grid.cell(cell[0], cell[1] + dj)
                 if not any(o is not None and o["mult"] is not None for o in (o1, o2)):
                     continue
             cost = _edge_cost(c1, c2, diagonal)
             if cost is None:
                 continue
+            run2 = run + 1 if c2["kind"] == "water" else 0
+            if run2 > MAX_WATER_RUN:
+                continue
+            node2 = (nb[0], nb[1], run2)
+            if node2 in closed:
+                continue
             ng = g[cur] + cost
-            if ng < g.get(nb, math.inf):
-                g[nb] = ng
-                parent[nb] = cur
+            if ng < g.get(node2, math.inf):
+                g[node2] = ng
+                parent[node2] = cur
                 counter += 1
                 nh = _octile(nb, goal)
-                heapq.heappush(heap, (ng + HEURISTIC_WEIGHT * HEURISTIC_SCALE * nh, nh, counter, nb))
-    return None, best, {"nodes": nodes, "reason": reason, "frontier": frontier, "parent": parent}
+                heapq.heappush(heap, (ng + HEURISTIC_WEIGHT * HEURISTIC_SCALE * nh, nh, counter, node2))
+    return None, best, {"nodes": nodes, "reason": reason, "frontier": frontier,
+                        "parent": parent, "best_node": best_node}
 
 
 def _rebuild(parent, cur):
@@ -378,6 +405,197 @@ def _rebuild(parent, cur):
         path.append(cur)
     path.reverse()
     return path
+
+
+def _cells(nodes):
+    """Node tuples -> their cell part (duplicates removed, order kept)."""
+    out = []
+    for node in nodes:
+        cell = (node[0], node[1])
+        if not out or out[-1] != cell:
+            out.append(cell)
+    return out
+
+
+def _blocked_by(grid, best, frontier):
+    """Why the search stopped: unknown ground, water, or terrain."""
+    if best in frontier:
+        return "unexplored"
+    for di in range(-2, 3):
+        for dj in range(-2, 3):
+            info = grid.cell(best[0] + di, best[1] + dj)
+            if info is not None and info["kind"] == "water":
+                return "water"
+    return "terrain"
+
+
+def _walkable(info):
+    return (info is not None and info.get("mult") is not None
+            and info.get("kind") in ("land", "path", "bridge"))
+
+
+def _step_allowed(grid, a, b):
+    c1, c2 = grid.cell(*a), grid.cell(*b)
+    if not _walkable(c1) or not _walkable(c2):
+        return False
+    diagonal = a[0] != b[0] and a[1] != b[1]
+    if _edge_cost(c1, c2, diagonal) is None:
+        return False
+    if diagonal:
+        o1 = grid.cell(a[0] + (b[0] - a[0]), a[1])
+        o2 = grid.cell(a[0], a[1] + (b[1] - a[1]))
+        if not any(_walkable(o) for o in (o1, o2)):
+            return False
+    return True
+
+
+def _unknown(grid, cell):
+    return not grid.known_chunk(cell[0] >> 2, cell[1] >> 2)
+
+
+def _is_shore(grid, cell):
+    if not _walkable(grid.cell(*cell)):
+        return False
+    return any(
+        (info := grid.cell(cell[0] + dx, cell[1] + dz)) is not None
+        and info["kind"] == "water"
+        for dx, dz in DIRS
+    )
+
+
+def _find_shore(grid, start, max_steps):
+    """Breadth-first: the first shore cell within ``max_steps`` allowed steps (start first)."""
+    queue = deque([(start, 0)])
+    seen = {start}
+    while queue:
+        cell, depth = queue.popleft()
+        if _is_shore(grid, cell):
+            return cell
+        if depth >= max_steps:
+            continue
+        for dx, dz in DIRS:
+            nb = (cell[0] + dx, cell[1] + dz)
+            if nb in seen or _unknown(grid, nb) or not _step_allowed(grid, cell, nb):
+                continue
+            seen.add(nb)
+            queue.append((nb, depth + 1))
+    return None
+
+
+def _bearing(dx, dz):
+    """Compass bearing in degrees: 0 = north (-Z), 90 = east (+X)."""
+    return math.degrees(math.atan2(dx, -dz))
+
+
+def _angle_diff(a, b):
+    return abs((a - b + 180) % 360 - 180)
+
+
+def _trace(grid, start, side, target, max_steps=SHORE_STEP_CELLS):
+    """Walk along the water's edge from ``start``; returns (cells, end)."""
+    bearing = _bearing(target[0] - start[0], target[1] - start[1])
+    waters = [
+        i for i, (dx, dz) in enumerate(DIRS)
+        if (info := grid.cell(start[0] + dx, start[1] + dz)) is not None
+        and info["kind"] == "water"
+    ]
+    if not waters:
+        return [], "dead_end"
+    i = min(waters, key=lambda k: (round(_angle_diff(_bearing(*DIRS[k]), bearing), 6), k))
+    if side == "left":
+        h, offsets = (i + 2) % 8, [-2, -1, 0, 1, 2, 3, 4]
+    else:
+        h, offsets = (i - 2) % 8, [2, 1, 0, -1, -2, -3, 4]
+    cells = []
+    cur = start
+    for _ in range(max_steps):
+        moved = False
+        for offset in offsets:
+            d = (h + offset) % 8
+            nb = (cur[0] + DIRS[d][0], cur[1] + DIRS[d][1])
+            if _unknown(grid, nb):
+                return cells, "frontier"
+            if not _step_allowed(grid, cur, nb):
+                continue
+            if nb == start and len(cells) >= 2:
+                return cells, "loop"
+            cur, h = nb, d
+            cells.append(nb)
+            moved = True
+            break
+        if not moved:
+            return cells, "dead_end"
+    return cells, "step"
+
+
+def _cell_distance(a, b):
+    """Straight-line blocks between two cell centres."""
+    return CELL * math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _trace_length(start, cells):
+    total, prev = 0.0, start
+    for cell in cells:
+        total += CELL * (math.sqrt(2) if cell[0] != prev[0] and cell[1] != prev[1] else 1)
+        prev = cell
+    return total
+
+
+def _shore_route(grid, planner, rng, start_cell, best, target, shore, shore_from, best_rem):
+    """The shore-following answer, or None when the normal partial result stands."""
+    if shore_from is not None and best_rem <= shore_from - SHORE_EXIT_GAIN:
+        return None
+    if shore == "auto" and max(abs(start_cell[0] - best[0]), abs(start_cell[1] - best[1])) > SHORE_NEAR_CELLS:
+        return None
+    seek = SHORE_NEAR_CELLS if shore == "auto" else SHORE_SEEK_CELLS
+    shore_start = _find_shore(grid, start_cell, seek)
+    if shore_start is None:
+        return None
+    sides = ("left", "right") if shore == "auto" else (shore,)
+    traces = {side: _trace(grid, shore_start, side, target) for side in sides}
+    if shore == "auto":
+        left, right = traces["left"][0], traces["right"][0]
+        last_left = left[-1] if left else shore_start
+        last_right = right[-1] if right else shore_start
+        d_left = math.hypot(target[0] - (last_left[0] * CELL + CELL / 2),
+                            target[1] - (last_left[1] * CELL + CELL / 2))
+        d_right = math.hypot(target[0] - (last_right[0] * CELL + CELL / 2),
+                             target[1] - (last_right[1] * CELL + CELL / 2))
+        if not left and not right:
+            side = rng.choice(("left", "right"))
+        elif abs(d_left - d_right) < SHORE_TIE:
+            side = rng.choice(("left", "right"))
+        else:
+            side = "left" if d_left < d_right else "right"
+    else:
+        side = shore
+    cells, end = traces[side]
+    if not cells:
+        return None
+    waypoints = []
+    marks = [k for k in range(0, len(cells), SHORE_WP_EVERY)]
+    if len(cells) - 1 not in marks:
+        marks.append(len(cells) - 1)
+    for k in sorted(marks):
+        col = planner.pick(cells[k], "shore")
+        if col is None:
+            continue
+        waypoints.append({
+            "x": col[0], "y": col[2], "z": col[1],
+            "kind": "shore_follow", "note": "along the water's edge",
+        })
+    if not waypoints:
+        return None
+    last = waypoints[-1]
+    return {
+        "status": "partial", "reason": "water", "blocked_by": "water",
+        "waypoints": waypoints, "bridges": [], "detours": [],
+        "distance": round(_path_length((start_cell[0] * CELL + CELL // 2,
+                                        start_cell[1] * CELL + CELL // 2), waypoints)),
+        "remaining": round(math.hypot(target[0] - last["x"], target[1] - last["z"])),
+        "shore": {"side": side, "cells": len(cells), "length": round(_trace_length(shore_start, cells)),
+                  "end": end},
+    }
 
 
 def _line_cells(a, b):
@@ -487,8 +705,15 @@ def _note_for(kind, y):
 
 
 def route(view, x, z, tx, tz, rng=None, now=time.monotonic, max_nodes=MAX_NODES,
-          time_limit=TIME_LIMIT_S, max_distance=MAX_DISTANCE, max_chunks=MAX_CHUNKS):
+          time_limit=TIME_LIMIT_S, max_distance=MAX_DISTANCE, max_chunks=MAX_CHUNKS,
+          shore=None, shore_from=None):
     """Plan a route from block (x, z) to (tx, tz) over chunks visible through ``view``."""
+    if shore not in (None, "auto", "left", "right"):
+        raise ValueError("Parameter 'shore' must be auto, left or right")
+    if shore_from is not None:
+        shore_from = float(shore_from)
+        if not math.isfinite(shore_from) or shore_from < 0:
+            raise ValueError("Parameter 'shore_from' must be a non-negative number")
     t0 = now()
     x, z, tx, tz = int(x), int(z), int(tx), int(tz)
     rng = rng or random.Random(zlib.crc32(f"{getattr(view, 'agent', '')}:{x}:{z}:{tx}:{tz}".encode()))
@@ -516,6 +741,7 @@ def route(view, x, z, tx, tz, rng=None, now=time.monotonic, max_nodes=MAX_NODES,
         out["target"].update(known=True, y=_ground_y(grid, tx, tz))
     if sc is None:
         out["reason"] = "start_unexplored"
+        out["blocked_by"] = "unexplored"
         out["note"] = "the chunk you stand in has not been reported as seen yet"
         return finish()
     out["start"]["y"] = sc["h"]
@@ -531,14 +757,33 @@ def route(view, x, z, tx, tz, rng=None, now=time.monotonic, max_nodes=MAX_NODES,
     path, best, info = _search(grid, start_cell, goal_cell, bounds, now, t0 + time_limit, max_nodes)
     out["nodes"] = info["nodes"]
     complete = path is not None
+    blocked_by = None
+    planner = _Planner(grid, rng)
     if not complete:
-        path = _rebuild(info["parent"], best) if best != start_cell else [start_cell]
+        best_node = info.get("best_node", (best[0], best[1], 0))
+        path = _cells(_rebuild(info["parent"], best_node)) if best != start_cell else [start_cell]
+        blocked_by = _blocked_by(grid, best, info["frontier"])
+        out["blocked_by"] = blocked_by
+        best_rem = math.hypot(tx - (best[0] * CELL + CELL / 2),
+                              tz - (best[1] * CELL + CELL / 2))
+        if shore in ("auto", "left", "right") and blocked_by == "water":
+            shore_result = _shore_route(
+                grid, planner, rng, start_cell, best, (tx, tz), shore, shore_from, best_rem
+            )
+            if shore_result is not None:
+                out.update(shore_result)
+                return finish()
         if len(path) < 2:
-            out["reason"] = "unexplored" if (info["frontier"] or not grid.known_chunk(goal_cell[0] >> 2, goal_cell[1] >> 2)) \
-                else ("limit" if info["reason"] else "blocked")
+            reason = ("unexplored"
+                      if (info["frontier"] or not grid.known_chunk(goal_cell[0] >> 2, goal_cell[1] >> 2))
+                      else ("limit" if info["reason"] else "blocked"))
+            if blocked_by == "water" and reason in ("blocked", "unexplored"):
+                reason = "water"
+            out["reason"] = reason
             out["remaining"] = round(dist)
             return finish()
-    planner = _Planner(grid, rng)
+    else:
+        path = _cells(path)
     if clamped:
         complete = False
     wps = _waypoints(planner, path, complete, (tx, tz), out["target"])
@@ -554,13 +799,16 @@ def route(view, x, z, tx, tz, rng=None, now=time.monotonic, max_nodes=MAX_NODES,
     else:
         out["status"] = "partial"
         if clamped and info["reason"] is None:
-            out["reason"] = "distance"
+            reason = "distance"
         elif info["reason"]:
-            out["reason"] = "limit"
+            reason = "limit"
         elif info["frontier"] or not out["target"]["known"]:
-            out["reason"] = "unexplored"
+            reason = "unexplored"
         else:
-            out["reason"] = "blocked"
+            reason = "blocked"
+        if blocked_by == "water" and reason in ("blocked", "unexplored"):
+            reason = "water"
+        out["reason"] = reason
     return finish()
 
 
