@@ -21,6 +21,7 @@ import map_store
 import mc_blocks
 import palette
 import store_view
+import api as _api
 from api import TopographyAPI
 from tests import helpers
 
@@ -321,6 +322,37 @@ class ChunkRawApiTests(unittest.TestCase):
         status, payload = self._post(self._body([_payload(self.root, 5, 5)]), gzipped=True)
         self.assertEqual(status, 200)
         self.assertEqual(payload["accepted"], 1)
+
+    def test_gzip_expansion_is_bounded(self):
+        # 64 MB of zeros compresses to a few kilobytes: it must answer 413, not allocate 64 MB.
+        bomb = gzip.compress(b"\0" * 64_000_000, 9)
+        self.assertLess(len(bomb), _api.MAX_CHUNK_RAW_COMPRESSED)
+        request = urllib.request.Request(
+            self.base + "/chunk_raw",
+            data=bomb,
+            headers={"Content-Type": "application/json", "Content-Encoding": "gzip"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                self.fail(f"expected 413, got {response.status}")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 413)
+            exc.close()
+
+    def test_corrupt_gzip_is_a_bad_request(self):
+        request = urllib.request.Request(
+            self.base + "/chunk_raw",
+            data=b"not gzip at all",
+            headers={"Content-Type": "application/json", "Content-Encoding": "gzip"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                self.fail(f"expected 400, got {response.status}")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 400)
+            exc.close()
 
     def test_limits_and_bad_format(self):
         body = self._body([])

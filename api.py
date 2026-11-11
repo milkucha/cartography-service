@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import gzip
 import hmac
 import json
 import logging
 import random
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -31,7 +31,7 @@ MAX_COORD = 30_000_000
 MAX_LINE_LENGTH = 4096
 MAX_BODY_BYTES = 1_000_000
 MAX_CHUNK_RAW_BYTES = 4_000_000
-MAX_CHUNK_RAW_COMPRESSED = 16_000_000
+MAX_CHUNK_RAW_COMPRESSED = 4_000_000
 MAX_PERCEPTION_SIZE = 32
 MAX_PERCEPTION_CHUNKS = 1024
 DEFAULT_PERCEPTION_SIZE = 16
@@ -148,10 +148,14 @@ class TopographyAPI:
                 raw = self.rfile.read(length)
                 if raw_endpoint:
                     if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
+                        # Bounded: decompress at most one byte past the documented limit.
+                        d = zlib.decompressobj(wbits=31)
                         try:
-                            raw = gzip.decompress(raw)
-                        except OSError as exc:
+                            raw = d.decompress(raw, MAX_CHUNK_RAW_BYTES + 1)
+                        except zlib.error as exc:
                             return self._error(400, f"Invalid gzip body: {exc}")
+                        if len(raw) > MAX_CHUNK_RAW_BYTES or d.unconsumed_tail:
+                            return self._error(413, "Body too large")
                     if len(raw) > MAX_CHUNK_RAW_BYTES:
                         return self._error(413, "Body too large")
                 try:
