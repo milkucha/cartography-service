@@ -62,7 +62,8 @@ class TopographyAPI:
         if self.decode_workers:
             with self._decode_pool_lock:
                 if self._decode_pool is None:
-                    self._decode_pool = concurrent.futures.ProcessPoolExecutor(max_workers=self.decode_workers)
+                    self._decode_pool = concurrent.futures.ProcessPoolExecutor(
+                        max_workers=self.decode_workers, initializer=chunk_decode.watch_parent)
                 pool = self._decode_pool
             try:
                 return list(pool.map(chunk_decode.decode_record, chunks))
