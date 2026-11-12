@@ -170,6 +170,26 @@ class StoreSummaryTests(unittest.TestCase):
         self.assertEqual(set(rows), {(0, 0)})
         self.assertEqual(store_view.StoreView(store, "Topo").seen_chunks(-5, -5, 5, 5), 1)
 
+    def test_seen_lake_survives_client_disconnect(self):
+        """A Mindcraft restart disconnects (replace with an empty loaded set) and reconnects
+        elsewhere: the lake the agent saw must still be on its overview (long-range test M1)."""
+        lake = {(cx, cz): helpers.make_record(cx, cz, height=55, water_level=62)
+                for cx in range(-30, -20) for cz in range(-2, 3)}
+        here = {(0, 0): helpers.make_record(0, 0)}
+        store = self.make({**lake, **here})
+        for cx, cz in lake:
+            self.load(store, cx, cz)
+        store.report_chunks("Topo", [list(k) for k in lake], None, replace=True)
+        store.report_chunks("Topo", [], None, replace=True)        # disconnect
+        self.load(store)
+        store.report_chunks("Topo", [[0, 0]], None, replace=True)   # reconnect far away
+        rows = store_view.StoreView(store, "Topo").summaries(-31, -3, 1, 3)
+        self.assertTrue(set(lake) <= set(rows), "seen lake chunks dropped after disconnect")
+        self.assertTrue(all(rows[k]["water"] == 256 for k in lake))
+        data = overview.build(store_view.StoreView(store, "Topo"), 0, 0, 2048)
+        self.assertTrue(any(c["dir"] == "west" and c.get("water") for c in data["cells"]),
+                        data["cells"])
+
     def test_last_seen_summary_is_the_pinned_revision(self):
         store = self.make({(0, 0): helpers.make_record(0, 0)})
         self.load(store)
