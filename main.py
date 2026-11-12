@@ -69,6 +69,15 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--decode-workers",
+        type=int,
+        default=int(os.environ.get("TOPOGRAPHY_DECODE_WORKERS", "2")),
+        help=(
+            "Worker processes that decode POST /chunk_raw chunks, so decoding does not slow "
+            "/route and /perception (default 2; 0 decodes in the request thread)"
+        ),
+    )
+    parser.add_argument(
         "--preload",
         action="store_true",
         default=os.environ.get("TOPOGRAPHY_PRELOAD", "").lower() in ("1", "true", "yes"),
@@ -168,7 +177,7 @@ def main(argv=None):
     if args.preload:
         preload(store, args.preload_limit)
 
-    api = TopographyAPI(store, args.host, args.port, token=args.token)
+    api = TopographyAPI(store, args.host, args.port, token=args.token, decode_workers=args.decode_workers)
     prefetcher = api.prefetcher
     prefetcher.start()
     server_thread = threading.Thread(target=api.serve_forever, name="topography-http", daemon=True)

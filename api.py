@@ -8,13 +8,15 @@ import logging
 import math
 import random
 import zlib
+import concurrent.futures
+import concurrent.futures.process
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import bot_chunk
-import composition
+import chunk_decode
 import landforms
-import loader
 import map_store
 import overview
 import perception
@@ -22,6 +24,7 @@ import prefetch
 import route
 import settlements
 import store_view
+import timing
 import survey
 import terrain_queries
 import topography
@@ -40,15 +43,38 @@ DEFAULT_PERCEPTION_SIZE = 16
 
 
 class TopographyAPI:
-    def __init__(self, store, host: str = "127.0.0.1", port: int = 8090, prefetcher=None, token=None):
+    def __init__(self, store, host: str = "127.0.0.1", port: int = 8090, prefetcher=None, token=None,
+                 decode_workers: int = 0):
         self.store = store
         self.host = host
         self.port = port
         self.token = token or None
         self.server: ThreadingHTTPServer | None = None
         self.prefetcher = prefetcher or prefetch.PrefetchWorker(store)
+        # Bot-chunk decoding in worker processes keeps it off the interpreter lock that /route and
+        # /perception need; 0 decodes in the request thread (tests, tiny deployments).
+        self.decode_workers = max(0, int(decode_workers or 0))
+        self._decode_pool = None
+        self._decode_pool_lock = threading.Lock()
+
+    def decode_chunks(self, chunks):
+        """``chunk_decode.decode_record`` for each chunk, in the worker pool when there is one."""
+        if self.decode_workers:
+            with self._decode_pool_lock:
+                if self._decode_pool is None:
+                    self._decode_pool = concurrent.futures.ProcessPoolExecutor(max_workers=self.decode_workers)
+                pool = self._decode_pool
+            try:
+                return list(pool.map(chunk_decode.decode_record, chunks))
+            except concurrent.futures.process.BrokenProcessPool:
+                log.exception("Decode workers failed; decoding in the server from now on")
+                with self._decode_pool_lock:
+                    self.decode_workers = 0
+                    self._decode_pool = None
+        return [chunk_decode.decode_record(chunk) for chunk in chunks]
 
     def make_handler(self):
+        api_self = self
         store = self.store
         prefetcher = self.prefetcher
         token = self.token
@@ -89,6 +115,14 @@ class TopographyAPI:
                 self._send(204, b"", "text/plain")
 
             def do_GET(self):
+                with timing.RequestTimer("GET", urlparse(self.path).path):
+                    return self._do_get()
+
+            def do_POST(self):
+                with timing.RequestTimer("POST", urlparse(self.path).path):
+                    return self._do_post()
+
+            def _do_get(self):
                 if not self._authorized():
                     return self._error(401, "Unauthorized")
                 parsed = urlparse(self.path)
@@ -134,7 +168,7 @@ class TopographyAPI:
                     log.exception("Unhandled GET error")
                     return self._error(500, f"Internal error: {exc}")
 
-            def do_POST(self):
+            def _do_post(self):
                 parsed = urlparse(self.path)
                 if parsed.path not in ("/diff", "/position", "/chunk_snapshot", "/seen", "/chunk_raw"):
                     return self._error(404, f"Unknown endpoint {parsed.path}")
@@ -239,24 +273,15 @@ class TopographyAPI:
                         "ignored": len(chunks),
                     })
                 accepted = unchanged = rejected = 0
-                for chunk in chunks:
-                    try:
-                        cx, cz, root = bot_chunk.to_root(chunk)
-                    except bot_chunk.PayloadLimit as exc:
-                        return self._error(400, str(exc))
-                    except (bot_chunk.PayloadError, TypeError, ValueError):
+                decoded = api_self.decode_chunks(chunks)
+                for item in decoded:
+                    if item[0] == chunk_decode.LIMIT:
+                        return self._error(400, item[1])
+                for item in decoded:
+                    if item[0] != chunk_decode.OK:
                         rejected += 1
                         continue
-                    try:
-                        surface = loader.decode_surface(root)
-                        stats = composition.analyze_chunk(root, cx, cz) or {}
-                        record = loader.build_chunk_record(
-                            cx, cz, surface, stats, source="bot"
-                        )
-                    except Exception:  # pragma: no cover - defensive
-                        log.exception("Failed to decode a bot chunk (%s, %s)", cx, cz)
-                        rejected += 1
-                        continue
+                    _, cx, cz, record = item
                     result = store.apply_bot_chunk(agent, dimension, record)
                     if result is True:
                         accepted += 1
@@ -572,6 +597,10 @@ class TopographyAPI:
             self.server.shutdown()
             self.server.server_close()
         self.prefetcher.stop()
+        with self._decode_pool_lock:
+            pool, self._decode_pool = self._decode_pool, None
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _int_param(params, name):

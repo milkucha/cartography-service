@@ -32,6 +32,8 @@ Options (or the matching environment variable):
 | `--db` | `TOPOGRAPHY_DB` | `maps/<level>-<worldid>.db` | SQLite store path. Wins over `--name`. Default is one database per world (next to `main.py`), so chunk caches and per-agent seen ledgers never mix between worlds. Falls back to `map_store.db` when there is no readable save. |
 | `--token` | `TOPOGRAPHY_TOKEN` | — | Shared bearer token (`Authorization: Bearer ...`). Mandatory when `--host` is not loopback; the service refuses to start otherwise. Loopback without a token is unchanged |
 | `--preload` | `TOPOGRAPHY_PRELOAD` | off | Decode every chunk at startup |
+| `--decode-workers` | `TOPOGRAPHY_DECODE_WORKERS` | `2` | Worker processes that decode `POST /chunk_raw` chunks, so a bot feeding new terrain does not slow `/route` and `/perception` (decoding is CPU-bound Python). `0` decodes in the request thread |
+| — | `TOPOGRAPHY_SLOW_MS` | `200` | Log requests, and store-lock waits or holds, slower than this (`topography.timing` warnings) |
 | `--preload-limit` | `TOPOGRAPHY_PRELOAD_LIMIT` | `0` | Max chunks to preload (0 = all) |
 
 DB path precedence: `--db` > `--name` > save-derived `maps/<level>-<worldid>.db` > `map_store.db`.

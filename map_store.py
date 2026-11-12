@@ -56,6 +56,8 @@ import json
 import logging
 import sqlite3
 import threading
+
+import timing
 import time
 import zlib
 from collections import OrderedDict, deque
@@ -197,7 +199,7 @@ class MapStore:
         self.loader = loader
         self.hot_limit = hot_limit
         self.warm_limit = warm_limit
-        self._lock = threading.RLock()
+        self._lock = timing.TimedRLock("store")
         self._hot: OrderedDict[tuple[int, int], dict] = OrderedDict()
         self._warm: OrderedDict[tuple[int, int], dict] = OrderedDict()
         self._dirty: dict[tuple[int, int], dict] = {}

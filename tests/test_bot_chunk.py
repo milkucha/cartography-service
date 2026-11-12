@@ -260,13 +260,15 @@ class StoreBotChunkTests(unittest.TestCase):
 
 
 class ChunkRawApiTests(unittest.TestCase):
+    DECODE_WORKERS = 0
+
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
         world = helpers.build_coast_world(cls._tmp.name)
         cls.loader = loader.ChunkLoader(world)
         cls.store = map_store.MapStore(str(Path(cls._tmp.name) / "map.db"), cls.loader)
-        cls.api = TopographyAPI(cls.store, "127.0.0.1", 0)
+        cls.api = TopographyAPI(cls.store, "127.0.0.1", 0, decode_workers=cls.DECODE_WORKERS)
         cls.thread = threading.Thread(target=cls.api.serve_forever, daemon=True)
         cls.thread.start()
         for _ in range(400):
@@ -381,6 +383,20 @@ class ChunkRawApiTests(unittest.TestCase):
         body = self._body([_payload(self.root, 0, 0)])
         body.pop("agent")
         self.assertEqual(self._post(body)[0], 400)
+
+
+class PooledChunkRawApiTests(ChunkRawApiTests):
+    """The same API tests with chunks decoded in a worker process (the server default)."""
+
+    DECODE_WORKERS = 1
+
+    def test_pool_decodes_like_the_request_thread(self):
+        chunks = [_payload(self.root, 0, 0), _payload(self.root, 3, 2, enc="u16"), {"cx": "bad"}]
+        inline = TopographyAPI(self.store, "127.0.0.1", 0).decode_chunks(chunks)
+        pooled = self.api.decode_chunks(chunks)
+        self.assertEqual(pooled, inline)
+        self.assertEqual([item[0] for item in pooled], ["ok", "ok", "rejected"])
+        self.assertIsNotNone(self.api._decode_pool, "decoded in a worker process")
 
 
 class TokenTests(unittest.TestCase):
