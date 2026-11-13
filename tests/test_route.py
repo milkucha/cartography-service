@@ -418,6 +418,57 @@ class ClimbTests(RouteCase):
         self.assertEqual(s[1] - b[1], route.SEARCH_PAD // route.CELL)
 
 
+class StartCellTests(RouteCase):
+    """LW1 return legs: from a steep lake bank the planner answered ``blocked`` in 3 ms."""
+
+    def test_start_on_a_cliff_cell_can_still_leave_it(self):
+        def col(x, z):
+            # the bot stands in a 4x4 cell with 10 blocks of relief (a cliff cell to the planner)
+            if 0 <= x <= 3 and 0 <= z <= 3:
+                h = LAND + (10 if x == 3 else 0)
+                return (h, GRASS, h, GRASS, False)
+            return flat(x, z)
+        res = self.plan(self.make(col), (1, 1), (100, 1))
+        self.assertEqual(res["status"], "complete", res)
+
+    def test_start_far_below_its_neighbours_can_still_leave(self):
+        def col(x, z):
+            # standing in a 4x4 pit 10 blocks deep: every step out is above MAX_STEP
+            if 0 <= x <= 3 and 0 <= z <= 3:
+                return (LAND - 10, GRASS, LAND - 10, GRASS, False)
+            return flat(x, z)
+        res = self.plan(self.make(col), (1, 1), (100, 1))
+        self.assertEqual(res["status"], "complete", res)
+
+    def test_a_cliff_cell_elsewhere_is_still_impassable(self):
+        cliff = {"kind": "cliff", "h": 64, "mult": None}
+        land = {"kind": "land", "h": 64, "mult": 1.0}
+        self.assertIsNone(route._edge_cost(land, cliff, False))
+        self.assertIsNone(route._edge_cost(cliff, land, False))
+        self.assertIsNotNone(route._edge_cost(cliff, land, False, leaving_start=True))
+        self.assertIsNone(route._edge_cost({"kind": "lava", "h": 64, "mult": None}, land, False, leaving_start=True))
+
+    def test_way_out_of_a_pocket_beyond_the_box_is_found(self):
+        # the bot is on a low shore 20 blocks below the land, water to the north and a 20-block bank
+        # everywhere else; the only way up is a ramp at x -130..-100, outside the first search box:
+        # the widened retry finds it
+        def col(x, z):
+            if z <= -8:
+                return water_at(x, z)
+            if -100 <= x <= 60 and z <= 7:
+                h = LAND - 20                                     # the low shore
+            elif -130 <= x < -100 and z <= 7:
+                h = LAND - 20 + round((-100 - x) * 20 / 30)       # the ramp
+            else:
+                h = LAND
+            return (h, GRASS, h, GRASS, False)
+        store = self.make(col, box=(-14, -3, 10, 12))
+        res = self.plan(store, (50, 0), (140, 150))
+        self.assertTrue(res.get("widened"), res)
+        self.assertEqual(res["status"], "complete", res)
+        self.assertLess(min(w["x"] for w in res["waypoints"]), -100, res["waypoints"])
+
+
 class GatingTests(RouteCase):
     def test_unseen_target_is_partial_and_never_read(self):
         store = self.make(flat)
@@ -467,12 +518,25 @@ class GatingTests(RouteCase):
 
     def test_blocked_by_cliff_wall(self):
         def col(x, z):
+            # a cliff ring round the start: no way out, and nothing unexplored is reached
+            if 32 <= max(abs(x), abs(z)) <= 47:
+                return (LAND + 20, "minecraft:stone", LAND + 20, "minecraft:stone", False)
+            return flat(x, z)
+        res = self.plan(self.make(col), (-10, 0), (90, 0))
+        self.assertEqual(res["status"], "partial")
+        self.assertEqual(res["reason"], "blocked")
+        self.assertEqual(res["blocked_by"], "terrain")
+        self.assertLess(res["waypoints"][-1]["x"], 32)
+
+    def test_wall_across_the_known_world_is_unexplored_not_blocked(self):
+        # the way round, if any, lies beyond what has been seen: the widened search says so
+        def col(x, z):
             if 0 <= x <= 7:
                 return (LAND + 20, "minecraft:stone", LAND + 20, "minecraft:stone", False)
             return flat(x, z)
         res = self.plan(self.make(col), (-60, 0), (60, 0))
         self.assertEqual(res["status"], "partial")
-        self.assertEqual(res["reason"], "blocked")
+        self.assertEqual(res["reason"], "unexplored")
         self.assertLess(res["waypoints"][-1]["x"], 0)
 
 

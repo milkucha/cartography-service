@@ -37,6 +37,9 @@ SEARCH_PAD = 96              # blocks of search area around the start/target box
 SEARCH_PAD_FRACTION = 0.25   # ... and this share of the straight distance: detours round a lake or
                              # a massif on a 1000-block trip run 150+ blocks off the line
 MAX_SEARCH_PAD = 384
+                             # a search that runs out of cells against the box edge is retried once
+                             # with twice the pad (up to 2 * MAX_SEARCH_PAD): the way out of a pocket
+                             # can lie outside any fixed box
 MAX_NODES = 40000            # A* expansions
 TIME_LIMIT_S = 1.5
 MAX_CHUNKS = 3000            # distinct chunks examined
@@ -311,16 +314,22 @@ def _octile(a, b):
     return CELL * (max(dx, dz) + (math.sqrt(2) - 1) * min(dx, dz))
 
 
-def _edge_cost(c1, c2, diagonal):
-    """Cost of stepping from cell ``c1`` to ``c2``, or None when the step is not walkable."""
+def _edge_cost(c1, c2, diagonal, leaving_start=False):
+    """Cost of stepping from cell ``c1`` to ``c2``, or None when the step is not walkable.
+
+    ``leaving_start``: ``c1`` is where the bot stands. It can always leave it (it got there), so a
+    start cell the model rates impassable (a cliff cell, a big step to a neighbour) still has exits.
+    """
     m1 = c1["mult"]
+    if m1 is None and leaving_start and c1["kind"] != "lava":
+        m1 = 1.0
     if m1 is None or c2["mult"] is None:
         return None
     k1, k2 = c1["kind"], c2["kind"]
     if (k1 == "bridge") != (k2 == "bridge") and "water" in (k1, k2):
         return None  # a deck is entered from land or deck, never from the water beside it
     dh = abs(c1["h"] - c2["h"])
-    if dh >= MAX_STEP:
+    if dh >= MAX_STEP and not leaving_start:
         return None
     dist = CELL * (math.sqrt(2) if diagonal else 1)
     return (dist * (m1 + c2["mult"]) / 2 + max(0, dh - 1) * CLIMB_COST
@@ -346,6 +355,7 @@ def _search(grid, start, goal, bounds, now, deadline, max_nodes):
     frontier = set()
     reason = None
     nodes = 0
+    edge_hit = False  # a walkable cell was skipped only because it lies outside the box
     while heap:
         _f, _h, _t, cur = heapq.heappop(heap)
         if cur in closed:
@@ -372,6 +382,9 @@ def _search(grid, start, goal, bounds, now, deadline, max_nodes):
         for di, dj in _NEIGHBOURS:
             nb = (cell[0] + di, cell[1] + dj)
             if not (ci0 <= nb[0] <= ci1 and cj0 <= nb[1] <= cj1):
+                if not edge_hit:
+                    out_cell = grid.cell(*nb)
+                    edge_hit = out_cell is not None and out_cell["mult"] is not None
                 continue
             c2 = grid.cell(*nb)
             if c2 is None:
@@ -386,7 +399,7 @@ def _search(grid, start, goal, bounds, now, deadline, max_nodes):
                 o1, o2 = grid.cell(cell[0] + di, cell[1]), grid.cell(cell[0], cell[1] + dj)
                 if not any(o is not None and o["mult"] is not None for o in (o1, o2)):
                     continue
-            cost = _edge_cost(c1, c2, diagonal)
+            cost = _edge_cost(c1, c2, diagonal, leaving_start=cell == start)
             if cost is None:
                 continue
             run2 = run + 1 if c2["kind"] == "water" else 0
@@ -403,7 +416,7 @@ def _search(grid, start, goal, bounds, now, deadline, max_nodes):
                 nh = _octile(nb, goal)
                 heapq.heappush(heap, (ng + HEURISTIC_WEIGHT * HEURISTIC_SCALE * nh, nh, counter, node2))
     return None, best, {"nodes": nodes, "reason": reason, "frontier": frontier,
-                        "parent": parent, "best_node": best_node}
+                        "parent": parent, "best_node": best_node, "edge_hit": edge_hit}
 
 
 def _rebuild(parent, cur):
@@ -766,7 +779,14 @@ def route(view, x, z, tx, tz, rng=None, now=time.monotonic, max_nodes=MAX_NODES,
                 max(start_cell[0], goal_cell[0]) + p, max(start_cell[1], goal_cell[1]) + p)
 
     path, best, info = _search(grid, start_cell, goal_cell, box(pad), now, t0 + time_limit, max_nodes)
-    out["nodes"] = info["nodes"]
+    nodes = info["nodes"]
+    if path is None and info["reason"] is None and info["edge_hit"]:
+        # ran out of cells against the box edge: the way round may lie just outside it
+        path, best, info = _search(grid, start_cell, goal_cell, box(min(2 * pad, 2 * MAX_SEARCH_PAD // CELL)),
+                                   now, t0 + time_limit, max(0, max_nodes - nodes))
+        nodes += info["nodes"]
+        out["widened"] = True
+    out["nodes"] = nodes
     complete = path is not None
     blocked_by = None
     planner = _Planner(grid, rng)
