@@ -6,7 +6,8 @@ or the target is unseen the route runs as far as is known and says so (``partial
 implies anything about what lies beyond.
 
 Costs (per block, multiplied): water ``WATER_COST``, steep ground adds ``ROUGH_COST`` per block
-of relief and ``CLIMB_COST`` per block of height step, buildings ``BUILT_COST``; bridges
+of relief and ``CLIMB_COST`` per block of height step, buildings ``BUILT_COST``; every block of
+ascent adds ``ASCENT_COST`` (so a long even climb over a peak is not free); bridges
 ``BRIDGE_COST`` and paths ``PATH_COST`` are cheaper than open ground. Natural ground ``terrain_y``
 is used for terrain, the deck height ``y`` for bridge decks.
 
@@ -32,7 +33,10 @@ import terrain_queries
 
 CELL = 4
 MAX_DISTANCE = 1536          # straight-line start->target; farther targets are clamped (reason "distance")
-SEARCH_PAD = 96              # blocks of search area around the start/target box
+SEARCH_PAD = 96              # blocks of search area around the start/target box (at least)
+SEARCH_PAD_FRACTION = 0.25   # ... and this share of the straight distance: detours round a lake or
+                             # a massif on a 1000-block trip run 150+ blocks off the line
+MAX_SEARCH_PAD = 384
 MAX_NODES = 40000            # A* expansions
 TIME_LIMIT_S = 1.5
 MAX_CHUNKS = 3000            # distinct chunks examined
@@ -45,6 +49,7 @@ WATER_COST = 5.0
 MAX_WATER_RUN = 2            # consecutive water cells allowed; wider water is impassable
 ROUGH_COST = 0.25            # extra multiplier per block of relief above 2 inside a cell
 CLIMB_COST = 1.5             # per block of height step above 1 between neighbouring cells
+ASCENT_COST = 2.0            # per block of height gained (uphill only), on top of the distance
 BUILT_COST = 2.5
 BRIDGE_COST = 0.6
 PATH_COST = 0.55
@@ -307,7 +312,9 @@ def _octile(a, b):
 
 
 def _edge_cost(c1, c2, diagonal):
-    if c1["mult"] is None or c2["mult"] is None:
+    """Cost of stepping from cell ``c1`` to ``c2``, or None when the step is not walkable."""
+    m1 = c1["mult"]
+    if m1 is None or c2["mult"] is None:
         return None
     k1, k2 = c1["kind"], c2["kind"]
     if (k1 == "bridge") != (k2 == "bridge") and "water" in (k1, k2):
@@ -316,7 +323,8 @@ def _edge_cost(c1, c2, diagonal):
     if dh >= MAX_STEP:
         return None
     dist = CELL * (math.sqrt(2) if diagonal else 1)
-    return dist * (c1["mult"] + c2["mult"]) / 2 + max(0, dh - 1) * CLIMB_COST
+    return (dist * (m1 + c2["mult"]) / 2 + max(0, dh - 1) * CLIMB_COST
+            + max(0, c2["h"] - c1["h"]) * ASCENT_COST)
 
 
 def _search(grid, start, goal, bounds, now, deadline, max_nodes):
@@ -751,10 +759,13 @@ def route(view, x, z, tx, tz, rng=None, now=time.monotonic, max_nodes=MAX_NODES,
             out["waypoints"] = [{"x": tx, "y": out["target"]["y"], "z": tz, "kind": "target"}]
         return finish()
 
-    pad = SEARCH_PAD // CELL
-    bounds = (min(start_cell[0], goal_cell[0]) - pad, min(start_cell[1], goal_cell[1]) - pad,
-              max(start_cell[0], goal_cell[0]) + pad, max(start_cell[1], goal_cell[1]) + pad)
-    path, best, info = _search(grid, start_cell, goal_cell, bounds, now, t0 + time_limit, max_nodes)
+    pad = round(min(MAX_SEARCH_PAD, max(SEARCH_PAD, SEARCH_PAD_FRACTION * min(dist, max_distance)))) // CELL
+
+    def box(p):
+        return (min(start_cell[0], goal_cell[0]) - p, min(start_cell[1], goal_cell[1]) - p,
+                max(start_cell[0], goal_cell[0]) + p, max(start_cell[1], goal_cell[1]) + p)
+
+    path, best, info = _search(grid, start_cell, goal_cell, box(pad), now, t0 + time_limit, max_nodes)
     out["nodes"] = info["nodes"]
     complete = path is not None
     blocked_by = None

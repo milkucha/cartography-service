@@ -361,6 +361,63 @@ class PathTests(RouteCase):
         self.assertIsNone(c(land, {"kind": "land", "h": 80, "mult": 1.0}))  # a cliff-sized step
 
 
+class ClimbTests(RouteCase):
+    """A ridge on the straight line and a valley beside it (long-route MT, in small)."""
+
+    BOX = (-12, -4, 12, 16)
+
+    @staticmethod
+    def massif(x, z):
+        # an even ridge across the line, 24 blocks high, rising 1 block per 4 (one block per cell:
+        # free under the old step-only cost); it ends at x=12, east of that is a flat valley
+        if x > 12:
+            return (LAND, GRASS, LAND, GRASS, False)
+        h = LAND + max(0, 24 - abs(z - 100) // 4)
+        return (h, GRASS, h, GRASS, False)
+
+    def climb(self, res, start):
+        pts = [start] + [(w["x"], w["z"]) for w in res["waypoints"]]
+        total = 0
+        for (ax, az), (bx, bz) in zip(pts, pts[1:]):
+            n = max(1, int(((bx - ax) ** 2 + (bz - az) ** 2) ** 0.5))
+            prev = self.massif(ax, az)[2]
+            for k in range(1, n + 1):
+                y = self.massif(round(ax + (bx - ax) * k / n), round(az + (bz - az) * k / n))[2]
+                total += max(0, y - prev)
+                prev = y
+        return total
+
+    def test_valley_beats_an_even_climb_over_the_peak(self):
+        store = self.make(self.massif)
+        res = self.plan(store, (0, -20), (0, 220))
+        self.assertEqual(res["status"], "complete")
+        self.assertLess(self.climb(res, (0, -20)), 6, res["waypoints"])
+        self.assertGreater(max(w["x"] for w in res["waypoints"]), 12)
+
+    def test_ascent_is_charged_uphill_only(self):
+        lo = {"kind": "land", "h": 64, "mult": 1.0}
+        hi = {"kind": "land", "h": 65, "mult": 1.0}
+        up, down, level = route._edge_cost(lo, hi, False), route._edge_cost(hi, lo, False), route._edge_cost(lo, lo, False)
+        self.assertAlmostEqual(up - level, route.ASCENT_COST)
+        self.assertAlmostEqual(down, level)
+
+    def test_search_box_grows_with_distance(self):
+        # a 1000-block trip may detour 150+ blocks off the straight line; a short one keeps the old box
+        store = self.make(flat)
+        seen = []
+        orig = route._search
+        def spy(grid, start, goal, bounds, *a, **kw):
+            seen.append((bounds, start, goal))
+            return orig(grid, start, goal, bounds, *a, **kw)
+        route._search = spy
+        try:
+            self.plan(store, (-40, 0), (40, 0))
+        finally:
+            route._search = orig
+        (b, s, g), = seen
+        self.assertEqual(s[1] - b[1], route.SEARCH_PAD // route.CELL)
+
+
 class GatingTests(RouteCase):
     def test_unseen_target_is_partial_and_never_read(self):
         store = self.make(flat)
