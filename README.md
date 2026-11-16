@@ -1,5 +1,5 @@
 <div>
-<h1 align="center">🗺️ Topography for Mindcraft-CE ⛏️</h1>
+<h1 align="center">🗺️ Topography for Mindcraft-CE</h1>
 
 <p align="center">A terrain map for <a href="https://github.com/mindcraft-ce/mindcraft-ce">Mindcraft CE</a> bots, built from the chunks they load.</p>
 <p align="center">Spatial awareness and long-range routing from what the bot has actually seen.</p>
@@ -16,7 +16,7 @@
 > [!Note]
 > Proof of concept: tested on one world and one model so far.
 
-# 🧭 What it is
+# What it is
 
 A small local sidecar service. The bot forwards the chunks it loads; the service turns them into a terrain
 map the bot can query and route over. The bot knows where the water, high ground, cliffs, flat sites and
@@ -24,7 +24,7 @@ buildings are, and it plans long trips from memory of the terrain it has seen. I
 world save and no vision.
 
 <a id="getting-started"></a>
-# 🚀 Getting Started
+# Getting Started
 
 ## Requirements
 
@@ -50,7 +50,7 @@ world save and no vision.
 Routing is on by default (`topography_routing: false` turns it off).
 
 <a id="results"></a>
-# 📊 Results
+# Results
 
 Six routes in one natural world (seed 6542604540806855638), 10 runs per route per agent. **Topo** is
 Mindcraft with this service; **Vanilla** is plain Mindcraft CE. Both use the same model (DeepSeek flash),
@@ -87,7 +87,7 @@ height profile below.
 | <a href="docs/results/LW2-cold.svg"><img src="docs/results/LW2-cold.svg" width="380" alt="LW2 tracks"></a> | <a href="docs/results/MT-cold.svg"><img src="docs/results/MT-cold.svg" width="380" alt="MT tracks"></a> |
 | <a href="docs/results/MT-seen.svg"><img src="docs/results/MT-seen.svg" width="380" alt="MT-seen tracks"></a> | <a href="docs/results/RV-cold.svg"><img src="docs/results/RV-cold.svg" width="380" alt="RV tracks"></a> |
 
-# ⚙️ How it works
+# How it works
 
 1. **Feed:** the bot sends each chunk it loads (`POST /chunk_raw`) and its seen/unloaded chunks (`POST /seen`).
 2. **Map:** the service reduces each chunk to a per-column surface record and stores it.
@@ -99,7 +99,7 @@ height profile below.
    Mindcraft's own pathfinder walks them leg by leg.
 
 <a id="architecture"></a>
-# 🏗️ Architecture
+# Architecture
 
 ```
 Mindcraft bot ── POST /chunk_raw, /seen, /position ──▶ topography service ──▶ SQLite (one DB per world)
@@ -108,7 +108,7 @@ Mindcraft bot ── POST /chunk_raw, /seen, /position ──▶ topography serv
    (optional) world save / Fabric plugin ──▶ same ingest path
 ```
 
-## 📥 Ingest
+## Ingest
 
 `POST /chunk_raw` carries a chunk's block palettes and packed indices, gzip-compressed, at
 most 16 chunks per request. `bot_chunk.py` rebuilds the same Anvil-shaped structure a save would give. It
@@ -116,7 +116,7 @@ then runs the same decoder as the save reader (`loader.py`), so a bot-fed chunk 
 produce identical records (tested). Decoding runs in worker processes so feeding new terrain doesn't
 slow queries. A save or the optional Fabric plugin feed the same path. Only the Overworld is stored.
 
-## 🧱 Column model
+## Column model
 
 Each column keeps three heights:
 - `y`: the topmost non-air block.
@@ -127,7 +127,7 @@ Each column keeps three heights:
 blocks lives in `terrain_rules.py`. Composition (water, trees, built blocks, ores at the surface) is stored
 per chunk.
 
-## 🗄️ Store
+## Store
 
 `map_store.py` is tiered:
 - **hot:** the bot's current perception window.
@@ -137,21 +137,21 @@ per chunk.
 Writes are batched and flushed about every 2 s. Every change bumps a store generation that clients cache
 on. An unchanged re-send changes nothing.
 
-## 👁️ What the bot knows
+## What the bot knows
 
 Every query takes `agent=`, and chunks that agent hasn't seen are reported as
 unexplored, never filled in. A chunk the bot has left is shown as it was when last loaded. It stays that way
 even if the world changes, via per-chunk revisions and copy-on-write history, until the bot sees it again.
 This is the map of a player, not of the server.
 
-## 🔭 Overview
+## Overview
 
 Each chunk revision also writes a tiny summary row: water, ground height range, trees, built
 columns, land class. `GET /overview` reads only these summaries to describe everything seen within up to
 4096 blocks (water bodies, high ground, built areas by direction) at a flat cost, however much has been
 seen.
 
-## 🛤️ Routing
+## Routing
 
 `route.py` runs A* on a 4-block grid over the agent's seen chunks.
 - **Cost:** climbing costs 2 per block of ascent, and paths and bridges are cheaper. Cliffs are impassable, and at most 2 consecutive water
@@ -164,13 +164,13 @@ seen.
   follows shorelines when water blocks the way, resumes after Mindcraft's own unstuck mode, and hands back
   to the model when it can't continue.
 
-## 🔌 HTTP
+## HTTP
 
 `api.py` is a standard-library `ThreadingHTTPServer`. It binds to loopback by default; off
 loopback, a bearer token (`--token`) is mandatory. The full interface is in `CONTRACT.md` in the umbrella
 repo; options, endpoints and internals are in [docs/REFERENCE.md](docs/REFERENCE.md).
 
-# 🧪 Tests
+# Tests
 
 ```powershell
 python -m unittest discover -s tests
@@ -178,6 +178,6 @@ python -m unittest discover -s tests
 
 Builds a synthetic world, so no Minecraft is needed.
 
-# 📜 License
+# License
 
 PolyForm Noncommercial 1.0.0 (see [LICENSE](LICENSE)).
