@@ -167,8 +167,7 @@ seen.
 ## HTTP
 
 `api.py` is a standard-library `ThreadingHTTPServer`. It binds to loopback by default; off
-loopback, a bearer token (`--token`) is mandatory. The full interface is in `CONTRACT.md` in the umbrella
-repo; options, endpoints and internals are in [docs/REFERENCE.md](docs/REFERENCE.md).
+loopback, a bearer token (`--token`) is mandatory. The full interface is in [docs/CONTRACT.md](docs/CONTRACT.md); options, endpoints and internals are in [docs/REFERENCE.md](docs/REFERENCE.md).
 
 # Tests
 

@@ -49,7 +49,7 @@ small worlds or benchmarks.
 
 Full request/response schemas and the diff contract:
 
-- Repo contract: `CONTRACT.md` in the umbrella repo
+- Contract: [CONTRACT.md](CONTRACT.md)
 - Endpoints: `/health`, `/perception`, `/overview`, `/topography`, `/area_composition`, `/shoreline`, `/recall`,
   `/chunk`, `/flat_areas`, `/bridge_span`, `/settlements`, `/landforms`, `/survey`, `/route`, `/seen_stats`, and
   `POST /diff`, `POST /chunk_snapshot`, `POST /chunk_raw`, `POST /position`, `POST /seen`.
