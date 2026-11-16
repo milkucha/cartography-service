@@ -180,4 +180,4 @@ Builds a synthetic world, so no Minecraft is needed.
 
 # License
 
-PolyForm Noncommercial 1.0.0 (see [LICENSE](LICENSE)).
+MIT (see [LICENSE](LICENSE)).

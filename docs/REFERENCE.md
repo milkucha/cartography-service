@@ -191,4 +191,4 @@ service.
 
 ## License
 
-PolyForm Noncommercial License 1.0.0 — see [LICENSE](../LICENSE). Free for noncommercial use; commercial use needs a separate licence from the author.
+MIT — see [LICENSE](../LICENSE).
