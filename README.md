@@ -24,7 +24,8 @@ In the Mindcraft profile (or `settings.js`):
 { "topography_enabled": true, "topography_service_url": "http://127.0.0.1:8090" }
 ```
 
-Join a Minecraft Java **1.20.1** server and play. The map fills in as the bot loads chunks. Routing is on by
+Join a Minecraft Java server and play. The map fills in as the bot loads chunks. Tested on **1.20.1**;
+should work on 1.18 and later (untested). Blocks added after 1.20.1 may be misread as non-natural ground. Routing is on by
 default (`topography_routing: false` turns it off).
 
 ## Results
