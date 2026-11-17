@@ -62,7 +62,7 @@ is the average model usage per run, outbound and return legs together. **Tokens 
 average for the legs (outbound or return) that arrived.
 
 <table>
-<tr><th rowspan="2">Route</th><th rowspan="2">Length (blocks)</th><th colspan="2" align="center">Arrival rate</th><th rowspan="9"></th><th colspan="2" align="center">Tokens per run</th><th colspan="2" align="center">Tokens per successful trip</th></tr>
+<tr><th rowspan="2">Route</th><th rowspan="2">Length (blocks)</th><th colspan="2" align="center">Arrival rate</th><th colspan="2" align="center">Tokens per run</th><th colspan="2" align="center">Tokens per successful trip</th></tr>
 <tr><th align="center">Vanilla</th><th align="center">Topo</th><th align="center">Vanilla</th><th align="center">Topo</th><th align="center">Vanilla</th><th align="center">Topo</th></tr>
 <tr><td>Long, Control (LC): Dry Ground</td><td align="center">1000</td><td align="center">60%</td><td align="center">100%</td><td align="center">43k</td><td align="center">12k</td><td align="center">18k</td><td align="center">6k</td></tr>
 <tr><td>Long, Water 1 (LW1): Lake on the Line</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">169k</td><td align="center">13k</td><td align="center">–</td><td align="center">7k</td></tr>
