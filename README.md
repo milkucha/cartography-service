@@ -13,9 +13,6 @@
 </p>
 </div>
 
-> [!Note]
-> Proof of concept: tested on one world and one model so far.
-
 # What it is
 
 A small local sidecar service. The bot forwards the chunks it loads; the service turns them into a terrain
@@ -30,10 +27,10 @@ world save and no vision.
 
 - Python 3.10+ (standard library only)
 - The Mindcraft fork with the map hooks: [mindcraft-ce-topography, branch `topography`](https://github.com/milkucha/mindcraft-ce-topography/tree/topography)
-- Minecraft Java Edition. Tested on **1.20.1**; should work on 1.18 and later (untested).
+- Minecraft Java Edition.
 
 > [!Warning]
-> Blocks added after 1.20.1 may be misread as non-natural ground.
+> Tested on **1.20.1**; should work on 1.18 and later. However, blocks added after 1.20.1 may be misread as non-natural ground.
 
 ## Install and Run
 
@@ -53,9 +50,12 @@ Routing is on by default (`topography_routing: false` turns it off). The terrain
 <a id="results"></a>
 # Results
 
-Six routes in one natural world (seed 6542604540806855638), 10 runs per route per agent. **Topo** is
-Mindcraft with this service; **Vanilla** is plain Mindcraft CE. Both use the same model (DeepSeek flash),
-given one instruction: go to these coordinates.
+Two bots, **Topo** (Mindcraft with the cartography service) and **Vanilla** (plain Mindcraft CE), were asked to complete six challenging routes in one natural world. 
+
+> Seed: 6542604540806855638
+> Version: 1.20.1
+> Model: DeepSeek Flash v.4.1
+> Prompt: "go to these coordinates"
 
 **Arrival rate** is the share of runs in which the bot reached the target (within 5 blocks). **Tokens per run**
 is the average model usage per run, outbound and return legs together. **Tokens per successful trip** is the
