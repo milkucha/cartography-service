@@ -9,7 +9,7 @@
   <a href="#results">Results</a> |
   <a href="#architecture">Architecture</a> |
   <a href="docs/REFERENCE.md">Reference</a> |
-  <a href="https://github.com/milkucha/mindcraft-ce-topography/tree/cartography">Mindcraft fork</a>
+  <a href="https://github.com/milkucha/mindcraft-ce-cartography/tree/cartography">Mindcraft fork</a>
 </p>
 </div>
 
@@ -26,7 +26,7 @@ world save and no vision.
 ## Requirements
 
 - Python 3.10+ (standard library only)
-- The Mindcraft fork with the map hooks: [mindcraft-ce-topography, branch `cartography`](https://github.com/milkucha/mindcraft-ce-topography/tree/cartography)
+- The Mindcraft fork with the map hooks: [mindcraft-ce-cartography, branch `cartography`](https://github.com/milkucha/mindcraft-ce-cartography/tree/cartography)
 - Minecraft Java Edition.
 
 > [!Note]
