@@ -57,27 +57,29 @@ Six routes in one natural world (seed 6542604540806855638), 10 runs per route pe
 Mindcraft with this service; **Vanilla** is plain Mindcraft CE. Both use the same model (DeepSeek flash),
 given one instruction: go to these coordinates.
 
-Topo in purple, Vanilla in orange (as in the charts). **Arrival rate** is the share of runs in which the bot reached the target (within 5 blocks). **Tokens per run**
+**Arrival rate** is the share of runs in which the bot reached the target (within 5 blocks). **Tokens per run**
 is the average model usage per run, outbound and return legs together. **Tokens per successful trip** is the
 average for the legs (outbound or return) that arrived.
 
-| Route | Length (blocks) | Arrival rate (%): Topo | Arrival rate (%): Vanilla | Tokens per run: Topo | Tokens per run: Vanilla | Tokens per successful trip: Topo | Tokens per successful trip: Vanilla |
-|---|---|---|---|---|---|---|---|
-| Long, Control (LC): Dry Ground | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{60}$ | $\color{Purple}\textbf{12k}$ | $\color{BurntOrange}\textsf{43k}$ | $\color{Purple}\textbf{6k}$ | $\color{BurntOrange}\textsf{18k}$ |
-| Long, Water 1 (LW1): Lake on the Line | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{0}$ | $\color{Purple}\textbf{13k}$ | $\color{BurntOrange}\textsf{169k}$ | $\color{Purple}\textbf{7k}$ | – |
-| Long, Water 2 (LW2): 332-Block Bay | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{80}$ | $\color{Purple}\textbf{20k}$ | $\color{BurntOrange}\textsf{85k}$ | $\color{Purple}\textbf{10k}$ | $\color{BurntOrange}\textsf{45k}$ |
-| Mountain (MT): Massif, Unseen | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{0}$ | $\color{Purple}\textbf{21k}$ | $\color{BurntOrange}\textsf{145k}$ | $\color{Purple}\textbf{10k}$ | – |
-| Mountain, Seen (MT-seen): Massif, Seen First | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{0}$ | $\color{Purple}\textbf{24k}$ | $\color{BurntOrange}\textsf{153k}$ | $\color{Purple}\textbf{12k}$ | – |
-| Ravine (RV): Ravine on the Line | 200 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{70}$ | $\color{Purple}\textbf{6k}$ | $\color{BurntOrange}\textsf{39k}$ | $\color{Purple}\textbf{6k}$ | $\color{BurntOrange}\textsf{26k}$ |
-| **All** |  | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{35}$ | $\color{Purple}\textbf{16k}$ | $\color{BurntOrange}\textsf{106k}$ | $\color{Purple}\textbf{9k}$ | $\color{BurntOrange}\textsf{32k}$ |
+<table>
+<tr><th rowspan="2">Route</th><th rowspan="2">Length (blocks)</th><th colspan="2">Arrival rate</th><th colspan="2">Tokens per run</th><th colspan="2">Tokens per successful trip</th></tr>
+<tr><th>Vanilla</th><th>Topo</th><th>Vanilla</th><th>Topo</th><th>Vanilla</th><th>Topo</th></tr>
+<tr><td>Long, Control (LC): Dry Ground</td><td>1000</td><td>60%</td><td>100%</td><td>43k</td><td>12k</td><td>18k</td><td>6k</td></tr>
+<tr><td>Long, Water 1 (LW1): Lake on the Line</td><td>1000</td><td>0%</td><td>100%</td><td>169k</td><td>13k</td><td>–</td><td>7k</td></tr>
+<tr><td>Long, Water 2 (LW2): 332-Block Bay</td><td>1000</td><td>80%</td><td>100%</td><td>85k</td><td>20k</td><td>45k</td><td>10k</td></tr>
+<tr><td>Mountain (MT): Massif, Unseen</td><td>1000</td><td>0%</td><td>100%</td><td>145k</td><td>21k</td><td>–</td><td>10k</td></tr>
+<tr><td>Mountain, Seen (MT-seen): Massif, Seen First</td><td>1000</td><td>0%</td><td>100%</td><td>153k</td><td>24k</td><td>–</td><td>12k</td></tr>
+<tr><td>Ravine (RV): Ravine on the Line</td><td>200</td><td>70%</td><td>100%</td><td>39k</td><td>6k</td><td>26k</td><td>6k</td></tr>
+<tr><td><b>All</b></td><td></td><td><b>35%</b></td><td><b>100%</b></td><td><b>106k</b></td><td><b>16k</b></td><td><b>32k</b></td><td><b>9k</b></td></tr>
+</table>
 
 Topo also walked the return leg on every run, so its per-run figures cover more walking. Vanilla's failed runs kept
 the model busy (digging, crafting, retrying) until it gave up or timed out, which is why its token use is highest
 where it never arrived. A dash means Vanilla never arrived on that route.
 
-- **Return legs:** Topo 50/50, Vanilla 10/14.
-- **Deaths:** Topo 0, Vanilla 2.
-- **Ravine:** Topo stayed away from the edge in 10/10 runs; Vanilla walked to it in 9/10 (neither fell).
+- **Return legs:** Vanilla 10/14, Topo 50/50.
+- **Deaths:** Vanilla 2, Topo 0.
+- **Ravine:** Vanilla walked to the edge in 9/10 runs; Topo stayed away from it in 10/10 (neither fell).
 
 > [!Important]
 > **Limits**
@@ -86,48 +88,42 @@ where it never arrived. A dash means Vanilla never arrived on that route.
 > - On half the mountain legs, the model had to re-issue the command near the target.
 > - The bay and ravine differences are not significant at 10 runs.
 
-Each chart shows all 20 journeys on one route (Topo purple, Vanilla orange) over the terrain, with a
+Each chart shows all 20 journeys on one route (Vanilla orange, Topo purple) over the terrain, with a
 height profile below.
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/LC-cold.svg"><img src="docs/results/LC-cold.svg" width="720" alt="Long, Control (LC): Dry Ground: tracks of all 20 journeys"></a>
 <hr>
-<p><strong>Summary</strong></p>
 <p>Both bots set off along the straight line, and on open ground they look much alike. Topo arrived every time, in about five minutes. Vanilla made it six times; in the other four, its pathfinder got stuck hopping in place about 30 blocks from the target, and it never got going again.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/LW1-cold.svg"><img src="docs/results/LW1-cold.svg" width="720" alt="Long, Water 1 (LW1): Lake on the Line: tracks of all 20 journeys"></a>
 <hr>
-<p><strong>Summary</strong></p>
 <p>A lake lies across the straight line. Topo went round it every time, crossing only one short channel (8 to 14 seconds in water). Vanilla headed straight for the water, then dug, crafted and wandered, mostly on the near side; it gave up or ran out of time on all ten runs, once just 24 blocks short.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/LW2-cold.svg"><img src="docs/results/LW2-cold.svg" width="720" alt="Long, Water 2 (LW2): 332-Block Bay: tracks of all 20 journeys"></a>
 <hr>
-<p><strong>Summary</strong></p>
 <p>A 332-block bay sits on the line. Topo took the long way round the west shore, with only a few seconds in water. Vanilla swam straight across, spending up to four and a half minutes in the water; it arrived eight times and gave up twice.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/MT-cold.svg"><img src="docs/results/MT-cold.svg" width="720" alt="Mountain (MT): Massif, Unseen: tracks of all 20 journeys"></a>
 <hr>
-<p><strong>Summary</strong></p>
 <p>A mountain massif blocks the line, and Topo had never seen the area, so it had no valley to plan through and went up and over the top (climbing about 155 blocks). It still arrived every time, and on the way back, with the area now seen, it took the lower road to the east. Vanilla walked into the massif, got stuck in its slopes and caves, and never arrived; it died once.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/MT-seen.svg"><img src="docs/results/MT-seen.svg" width="720" alt="Mountain, Seen (MT-seen): Massif, Seen First: tracks of all 20 journeys"></a>
 <hr>
-<p><strong>Summary</strong></p>
 <p>The same massif, but Topo had walked the area before. This time it planned the low road round the east side from the start, climbing only 73 to 80 blocks. Vanilla, with no map, went straight into the mountain again and gave up or timed out on all ten runs.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/RV-cold.svg"><img src="docs/results/RV-cold.svg" width="720" alt="Ravine (RV): Ravine on the Line: tracks of all 20 journeys"></a>
 <hr>
-<p><strong>Summary</strong></p>
 <p>A deep ravine cuts across a 200-block trip. Topo routed round it without ever going near the edge. Vanilla walked straight to the edge nine times out of ten; it never fell, but it arrived only seven times.</p>
 </td></tr></table>
 
