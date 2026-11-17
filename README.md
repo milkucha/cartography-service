@@ -62,15 +62,15 @@ is the average model usage per run, outbound and return legs together. **Tokens 
 average for the legs (outbound or return) that arrived.
 
 <table>
-<tr><th rowspan="2">Route</th><th rowspan="2">Length (blocks)</th><th colspan="2">Arrival rate</th><th colspan="2">Tokens per run</th><th colspan="2">Tokens per successful trip</th></tr>
-<tr><th>Vanilla</th><th>Topo</th><th>Vanilla</th><th>Topo</th><th>Vanilla</th><th>Topo</th></tr>
-<tr><td>Long, Control (LC): Dry Ground</td><td>1000</td><td>60%</td><td>100%</td><td>43k</td><td>12k</td><td>18k</td><td>6k</td></tr>
-<tr><td>Long, Water 1 (LW1): Lake on the Line</td><td>1000</td><td>0%</td><td>100%</td><td>169k</td><td>13k</td><td>–</td><td>7k</td></tr>
-<tr><td>Long, Water 2 (LW2): 332-Block Bay</td><td>1000</td><td>80%</td><td>100%</td><td>85k</td><td>20k</td><td>45k</td><td>10k</td></tr>
-<tr><td>Mountain (MT): Massif, Unseen</td><td>1000</td><td>0%</td><td>100%</td><td>145k</td><td>21k</td><td>–</td><td>10k</td></tr>
-<tr><td>Mountain, Seen (MT-seen): Massif, Seen First</td><td>1000</td><td>0%</td><td>100%</td><td>153k</td><td>24k</td><td>–</td><td>12k</td></tr>
-<tr><td>Ravine (RV): Ravine on the Line</td><td>200</td><td>70%</td><td>100%</td><td>39k</td><td>6k</td><td>26k</td><td>6k</td></tr>
-<tr><td><b>All</b></td><td></td><td><b>35%</b></td><td><b>100%</b></td><td><b>106k</b></td><td><b>16k</b></td><td><b>32k</b></td><td><b>9k</b></td></tr>
+<tr><th rowspan="2">Route</th><th rowspan="2">Length (blocks)</th><th colspan="2" align="center">Arrival rate</th><th rowspan="9"></th><th colspan="2" align="center">Tokens per run</th><th colspan="2" align="center">Tokens per successful trip</th></tr>
+<tr><th align="center">Vanilla</th><th align="center">Topo</th><th align="center">Vanilla</th><th align="center">Topo</th><th align="center">Vanilla</th><th align="center">Topo</th></tr>
+<tr><td>Long, Control (LC): Dry Ground</td><td align="center">1000</td><td align="center">60%</td><td align="center">100%</td><td align="center">43k</td><td align="center">12k</td><td align="center">18k</td><td align="center">6k</td></tr>
+<tr><td>Long, Water 1 (LW1): Lake on the Line</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">169k</td><td align="center">13k</td><td align="center">–</td><td align="center">7k</td></tr>
+<tr><td>Long, Water 2 (LW2): 332-Block Bay</td><td align="center">1000</td><td align="center">80%</td><td align="center">100%</td><td align="center">85k</td><td align="center">20k</td><td align="center">45k</td><td align="center">10k</td></tr>
+<tr><td>Mountain (MT): Massif, Unseen</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">145k</td><td align="center">21k</td><td align="center">–</td><td align="center">10k</td></tr>
+<tr><td>Mountain, Seen (MT-seen): Massif, Seen First</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">153k</td><td align="center">24k</td><td align="center">–</td><td align="center">12k</td></tr>
+<tr><td>Ravine (RV): Ravine on the Line</td><td align="center">200</td><td align="center">70%</td><td align="center">100%</td><td align="center">39k</td><td align="center">6k</td><td align="center">26k</td><td align="center">6k</td></tr>
+<tr><td><b>All</b></td><td align="center"></td><td align="center"><b>35%</b></td><td align="center"><b>100%</b></td><td align="center"><b>106k</b></td><td align="center"><b>16k</b></td><td align="center"><b>32k</b></td><td align="center"><b>9k</b></td></tr>
 </table>
 
 Topo also walked the return leg on every run, so its per-run figures cover more walking. Vanilla's failed runs kept
