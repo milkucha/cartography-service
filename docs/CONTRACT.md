@@ -1,10 +1,11 @@
 # Cartography for Mindcraft-CE: HTTP contract
 
 Shared interface between the service (`cartography-service`), the optional Fabric plugin, and the Mindcraft
-hooks (`topography.js` and friends). Any change here must be reflected in all three. The terrain layer keeps the
-name *topography* in settings, endpoints, environment variables and code.
+hooks (`topography.js` and friends). Any change here must be reflected in all three. Names for the service as a
+whole (master switch, URL, token, environment variables, logs) use *cartography*; the terrain layer keeps
+*topography* (`$TOPOGRAPHY`, `!topography`, `/topography`, `topography_*` perception and routing settings).
 
-Base URL: `http://127.0.0.1:8090` (override with `TOPOGRAPHY_SERVICE_URL`).
+Base URL: `http://127.0.0.1:8090` (override with `CARTOGRAPHY_SERVICE_URL`).
 
 Bounds enforced by the service:
 
@@ -20,7 +21,7 @@ Bounds enforced by the service:
 ```json
 {
   "status": "ok",
-  "service": "topography",
+  "service": "cartography",
   "loader_available": true,
   "region_dir": "C:/server/world/region",
   "region_files": 12,
@@ -234,10 +235,10 @@ Response:
 
 | Flag / env | Behaviour |
 |---|---|
-| `--world` / `TOPOGRAPHY_WORLD` | Save folder (unchanged); `region/` supplies base chunks |
-| `--name` / `TOPOGRAPHY_NAME` | Save-less world identity: `maps/<name>.db`. `--world` may also be given; a save then revalidates bot chunks as above |
-| `--db` / `TOPOGRAPHY_DB` | Explicit database path; wins over `--name` |
-| `--token` / `TOPOGRAPHY_TOKEN` | Shared bearer token, sent as `Authorization: Bearer <token>`, required on every request when set |
+| `--world` / `CARTOGRAPHY_WORLD` | Save folder (unchanged); `region/` supplies base chunks |
+| `--name` / `CARTOGRAPHY_NAME` | Save-less world identity: `maps/<name>.db`. `--world` may also be given; a save then revalidates bot chunks as above |
+| `--db` / `CARTOGRAPHY_DB` | Explicit database path; wins over `--name` |
+| `--token` / `CARTOGRAPHY_TOKEN` | Shared bearer token, sent as `Authorization: Bearer <token>`, required on every request when set |
 
 DB path precedence: `--db` > `--name` > `maps/<level>-<worldid>.db` > `map_store.db`. A non-loopback
 `--host` without a token is refused at startup; loopback without a token keeps working.
@@ -274,7 +275,7 @@ Response (`application/json`):
 
 ```json
 {
-  "service": "topography",
+  "service": "cartography",
   "center": {"x": 0, "z": 0},
   "size_chunks": 16,
   "window": {"cx1": -8, "cz1": -8, "cx2": 7, "cz2": 7},
@@ -495,20 +496,20 @@ defaults below.
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| `topography_service_url` | `http://127.0.0.1:8090` | Resolved from `TOPOGRAPHY_SERVICE_URL` env, then `settings.js`, then the default |
-| `topography_enabled` | `false` | Master switch, off by default; `true` turns on the feed, the block, the topography commands, routing and prefetch |
+| `cartography_service_url` | `http://127.0.0.1:8090` | Resolved from `CARTOGRAPHY_SERVICE_URL` env, then `settings.js`, then the default |
+| `cartography_enabled` | `false` | Master switch, off by default; `true` turns on the feed, the block, the topography commands, routing and prefetch |
 | `topography_perception` | `true` | Inject `$TOPOGRAPHY` into every prompt (when the master switch is on) |
 | `topography_debug` | `false` | Log perception fetch/cache timing, status, and failure reasons |
 | `topography_render_chunks` | `16` | Perception window side length in chunks |
 | `topography_perception_timeout_ms` | `1500` | Timeout for `/perception`; on error inject nothing |
-| `topography_routing` | `true` | Route `!goToCoordinates` / `!goToRememberedPlace` over `GET /route` for far targets and places with no `y` (needs `topography_enabled`; per-profile override). On by default since 2026-11-15 |
+| `topography_routing` | `true` | Route `!goToCoordinates` / `!goToRememberedPlace` over `GET /route` for far targets and places with no `y` (needs `cartography_enabled`; per-profile override). On by default since 2026-11-15 |
 | `topography_perception_materials` | `false` | Request per-cell dominant materials |
 | `topography_far_line` | `true` | Add the `far (seen earlier): ...` line from `/perception`'s `far` field (at most 3 items, at most 140 chars). It is the first line dropped when the block is over its cap. Set it to `false` (profile or settings) to omit it |
-| `topography_feed` | `bot` | Forward loaded chunks to `POST /chunk_raw` (`bot`) or only report the seen ledger (`off`). `topography_enabled: false` disables both |
-| `topography_token` | unset | Sent as `Authorization: Bearer` on every service request when set |
+| `topography_feed` | `bot` | Forward loaded chunks to `POST /chunk_raw` (`bot`) or only report the seen ledger (`off`). `cartography_enabled: false` disables both |
+| `cartography_token` | unset | Sent as `Authorization: Bearer` on every service request when set |
 
-`topography_enabled`, `topography_perception`, and `topography_debug` may be overridden per
-Mindcraft profile (for example, a second agent with `topography_enabled: false`).
+`cartography_enabled`, `topography_perception`, and `topography_debug` may be overridden per
+Mindcraft profile (for example, a second agent with `cartography_enabled: false`).
 
 The formatted block is capped at **1200 characters** by default (~300 tokens; configurable with the
 Mindcraft setting `topography_max_chars`). Over the cap, Mindcraft drops whole lowest-value lines first
@@ -536,7 +537,7 @@ and `terrain.relief`, computed from `terrain_y`.
 
 - Only `minecraft:overworld` is stored. Every payload carries `"dimension"`; other dimensions are
   accepted and ignored (`/diff` adds `"ignored": n`). Any GET with `dimension=` other than overworld, and
-  `POST /position`, answer `{"service":"topography","unavailable":"dimension","dimension":...}`.
+  `POST /position`, answer `{"service":"cartography","unavailable":"dimension","dimension":...}`.
 - `place` deltas add `old_block`. `break` deltas add `surface_y` (true column surface),
   `new_top_y/new_top_block`, `new_ground_y/new_ground_block`, `new_terrain_y/new_terrain_block`
   (may be null) and optionally `new_block`. A break below the recorded surface never lowers it.
@@ -657,7 +658,7 @@ stopped at an unseen chunk, at water, or at terrain.
   has surface data for it (save-file load after the server writes the chunk, or a plugin snapshot; see
   `snapshotDebounceMs` / `trackChunkLifecycle`); until then it is reported as `unexplored`.
 - Mindcraft: `!goToCoordinates` and `!goToRememberedPlace` use it for far targets (beyond ~96 blocks) or
-  places with no `y`, only when `topography_enabled` is not false; the pathfinder still walks every leg
+  places with no `y`, only when `cartography_enabled` is not false; the pathfinder still walks every leg
   (`src/agent/library/route_travel.js`), replanning at each waypoint.
 
 ## Settlements, survey, seen ledger
@@ -704,6 +705,6 @@ stopped at an unseen chunk, at water, or at terrain.
 ## Storage
 
 The service keeps one SQLite database per world (`maps/<level>-<worldid>.db`);
-`--db` / `TOPOGRAPHY_DB` override it, and `--name` / `TOPOGRAPHY_NAME` names a save-less database
+`--db` / `CARTOGRAPHY_DB` override it, and `--name` / `CARTOGRAPHY_NAME` names a save-less database
 (`maps/<name>.db`). Each bot keeps `bots/<name>/memory.db` (and its other files) per
 world under `bots/<name>/worlds/<world_name>/` when `world_name` / `MINDCRAFT_WORLD` is set.

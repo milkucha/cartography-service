@@ -13,7 +13,7 @@ import bot_chunk
 import composition
 import loader
 
-log = logging.getLogger("topography.decode")
+log = logging.getLogger("cartography.decode")
 
 OK, LIMIT, REJECTED = "ok", "limit", "rejected"
 

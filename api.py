@@ -29,7 +29,7 @@ import survey
 import terrain_queries
 import topography
 
-log = logging.getLogger("topography.api")
+log = logging.getLogger("cartography.api")
 
 MAX_RADIUS = 256
 MAX_COORD = 30_000_000
@@ -376,7 +376,7 @@ class TopographyAPI:
             def _health(self):
                 health = {
                     "status": "ok",
-                    "service": "topography",
+                    "service": "cartography",
                     "loader_available": bool(
                         getattr(store.loader, "available", False)
                     ),
@@ -494,7 +494,7 @@ class TopographyAPI:
                 self._send(
                     200,
                     {
-                        "service": "topography",
+                        "service": "cartography",
                         "unavailable": "dimension",
                         "dimension": map_store.normalize_dimension(dimension),
                     },

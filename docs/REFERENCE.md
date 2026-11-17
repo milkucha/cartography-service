@@ -18,23 +18,23 @@ Without a save — the bot fills the map over `POST /chunk_raw`:
 
 ```powershell
 python main.py --name survival1 --host 127.0.0.1 --port 8090
-# ...or: $env:TOPOGRAPHY_NAME="survival1"; python main.py
+# ...or: $env:CARTOGRAPHY_NAME="survival1"; python main.py
 ```
 
 Options (or the matching environment variable):
 
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
-| `--world` | `TOPOGRAPHY_WORLD` | `world` | World/save folder containing `region/` |
-| `--name` | `TOPOGRAPHY_NAME` | — | Save-less world identity: uses `maps/<name>.db`. Does not require a save; `--world` still applies if given |
-| `--host` | `TOPOGRAPHY_HOST` | `127.0.0.1` | Bind address |
-| `--port` | `TOPOGRAPHY_PORT` | `8090` | HTTP port |
-| `--db` | `TOPOGRAPHY_DB` | `maps/<level>-<worldid>.db` | SQLite store path. Wins over `--name`. Default is one database per world (next to `main.py`), so chunk caches and per-agent seen ledgers never mix between worlds. Falls back to `map_store.db` when there is no readable save. |
-| `--token` | `TOPOGRAPHY_TOKEN` | — | Shared bearer token (`Authorization: Bearer ...`). Mandatory when `--host` is not loopback; the service refuses to start otherwise. Loopback without a token is unchanged |
-| `--preload` | `TOPOGRAPHY_PRELOAD` | off | Decode every chunk at startup |
-| `--decode-workers` | `TOPOGRAPHY_DECODE_WORKERS` | `2` | Worker processes that decode `POST /chunk_raw` chunks, so a bot feeding new terrain does not slow `/route` and `/perception` (decoding is CPU-bound Python). `0` decodes in the request thread |
-| — | `TOPOGRAPHY_SLOW_MS` | `200` | Log requests, and store-lock waits or holds, slower than this (`topography.timing` warnings) |
-| `--preload-limit` | `TOPOGRAPHY_PRELOAD_LIMIT` | `0` | Max chunks to preload (0 = all) |
+| `--world` | `CARTOGRAPHY_WORLD` | `world` | World/save folder containing `region/` |
+| `--name` | `CARTOGRAPHY_NAME` | — | Save-less world identity: uses `maps/<name>.db`. Does not require a save; `--world` still applies if given |
+| `--host` | `CARTOGRAPHY_HOST` | `127.0.0.1` | Bind address |
+| `--port` | `CARTOGRAPHY_PORT` | `8090` | HTTP port |
+| `--db` | `CARTOGRAPHY_DB` | `maps/<level>-<worldid>.db` | SQLite store path. Wins over `--name`. Default is one database per world (next to `main.py`), so chunk caches and per-agent seen ledgers never mix between worlds. Falls back to `map_store.db` when there is no readable save. |
+| `--token` | `CARTOGRAPHY_TOKEN` | — | Shared bearer token (`Authorization: Bearer ...`). Mandatory when `--host` is not loopback; the service refuses to start otherwise. Loopback without a token is unchanged |
+| `--preload` | `CARTOGRAPHY_PRELOAD` | off | Decode every chunk at startup |
+| `--decode-workers` | `CARTOGRAPHY_DECODE_WORKERS` | `2` | Worker processes that decode `POST /chunk_raw` chunks, so a bot feeding new terrain does not slow `/route` and `/perception` (decoding is CPU-bound Python). `0` decodes in the request thread |
+| — | `CARTOGRAPHY_SLOW_MS` | `200` | Log requests, and store-lock waits or holds, slower than this (`cartography.timing` warnings) |
+| `--preload-limit` | `CARTOGRAPHY_PRELOAD_LIMIT` | `0` | Max chunks to preload (0 = all) |
 
 DB path precedence: `--db` > `--name` > save-derived `maps/<level>-<worldid>.db` > `map_store.db`.
 
@@ -79,7 +79,7 @@ match `bits`. Non-Overworld dimensions are accepted and ignored. `Content-Encodi
 supported. `/survey` needs the save's 3D sections: without a save it answers
 `{"unavailable": "no save"}`.
 
-Authentication: when `--token` / `TOPOGRAPHY_TOKEN` is set, every request needs
+Authentication: when `--token` / `CARTOGRAPHY_TOKEN` is set, every request needs
 `Authorization: Bearer <token>` (401 otherwise). A non-loopback bind without a token is refused at
 startup.
 

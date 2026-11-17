@@ -1,6 +1,6 @@
 """Slow-path logging: a re-entrant lock that reports long waits and holds, and a request timer.
 
-Logging only; behaviour is unchanged. Threshold: ``TOPOGRAPHY_SLOW_MS`` (default 200 ms).
+Logging only; behaviour is unchanged. Threshold: ``CARTOGRAPHY_SLOW_MS`` (default 200 ms).
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ import sys
 import threading
 import time
 
-log = logging.getLogger("topography.timing")
-SLOW_S = float(os.environ.get("TOPOGRAPHY_SLOW_MS", "200")) / 1000.0
+log = logging.getLogger("cartography.timing")
+SLOW_S = float(os.environ.get("CARTOGRAPHY_SLOW_MS", "200")) / 1000.0
 
 
 def _caller(depth: int) -> str:

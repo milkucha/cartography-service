@@ -9,7 +9,7 @@ to the surface-only, token-efficient model described in TOPOGRAPHY_SPEC.md:
 - block composition counts + strong indicators + dominant biome
 
 Chunks are decoded lazily and cached by the map store; the full 60+ GB world
-is never held in memory. Set TOPOGRAPHY_PRELOAD=1 to walk every region file
+is never held in memory. Set CARTOGRAPHY_PRELOAD=1 to walk every region file
 at startup (slow, mostly useful for small test worlds).
 """
 
@@ -28,7 +28,7 @@ import palette
 import region
 import terrain_rules
 
-log = logging.getLogger("topography.loader")
+log = logging.getLogger("cartography.loader")
 
 REGION_RE = re.compile(r"^r\.(-?\d+)\.(-?\d+)\.mca$")
 

@@ -40,12 +40,12 @@ world save and no vision.
    ```
 2. In the Mindcraft profile (or `settings.js`):
    ```json
-   { "topography_enabled": true, "topography_service_url": "http://127.0.0.1:8090" }
+   { "cartography_enabled": true, "cartography_service_url": "http://127.0.0.1:8090" }
    ```
 3. Join the server and play. The map fills in as the bot loads chunks.
 
-Routing is on by default (`topography_routing: false` turns it off). The terrain layer is called
-*topography* in settings and commands.
+Routing is on by default (`topography_routing: false` turns it off). Settings for the
+service as a whole start with `cartography_`; the terrain layer's start with `topography_`.
 
 <a id="results"></a>
 # Results

@@ -23,30 +23,30 @@ import map_store
 import prefetch
 from api import TopographyAPI
 
-log = logging.getLogger("topography")
+log = logging.getLogger("cartography")
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Mindcraft topography map service")
     parser.add_argument(
         "--world",
-        default=os.environ.get("TOPOGRAPHY_WORLD", "world"),
-        help="Path to the Minecraft world/save folder (default: $TOPOGRAPHY_WORLD or ./world)",
+        default=os.environ.get("CARTOGRAPHY_WORLD", "world"),
+        help="Path to the Minecraft world/save folder (default: $CARTOGRAPHY_WORLD or ./world)",
     )
     parser.add_argument(
         "--host",
-        default=os.environ.get("TOPOGRAPHY_HOST", "127.0.0.1"),
+        default=os.environ.get("CARTOGRAPHY_HOST", "127.0.0.1"),
         help="Bind address (default: 127.0.0.1)",
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("TOPOGRAPHY_PORT", "8090")),
+        default=int(os.environ.get("CARTOGRAPHY_PORT", "8090")),
         help="HTTP port (default: 8090)",
     )
     parser.add_argument(
         "--db",
-        default=os.environ.get("TOPOGRAPHY_DB"),
+        default=os.environ.get("CARTOGRAPHY_DB"),
         help=(
             "SQLite cold-store path (default: maps/<level>-<worldid>.db next to this file, one "
             "database per world so caches and seen-chunk ledgers never mix between worlds)"
@@ -54,7 +54,7 @@ def build_parser():
     )
     parser.add_argument(
         "--name",
-        default=os.environ.get("TOPOGRAPHY_NAME"),
+        default=os.environ.get("CARTOGRAPHY_NAME"),
         help=(
             "World name for save-less operation: uses maps/<name>.db. The bot can fill the map "
             "over POST /chunk_raw without a save folder. --db wins when both are given"
@@ -62,7 +62,7 @@ def build_parser():
     )
     parser.add_argument(
         "--token",
-        default=os.environ.get("TOPOGRAPHY_TOKEN"),
+        default=os.environ.get("CARTOGRAPHY_TOKEN"),
         help=(
             "Shared bearer token required on every request (Authorization: Bearer ...). "
             "Mandatory when --host is not loopback; loopback without a token keeps working"
@@ -71,7 +71,7 @@ def build_parser():
     parser.add_argument(
         "--decode-workers",
         type=int,
-        default=int(os.environ.get("TOPOGRAPHY_DECODE_WORKERS", "2")),
+        default=int(os.environ.get("CARTOGRAPHY_DECODE_WORKERS", "2")),
         help=(
             "Worker processes that decode POST /chunk_raw chunks, so decoding does not slow "
             "/route and /perception (default 2; 0 decodes in the request thread)"
@@ -80,13 +80,13 @@ def build_parser():
     parser.add_argument(
         "--preload",
         action="store_true",
-        default=os.environ.get("TOPOGRAPHY_PRELOAD", "").lower() in ("1", "true", "yes"),
+        default=os.environ.get("CARTOGRAPHY_PRELOAD", "").lower() in ("1", "true", "yes"),
         help="Decode every chunk from the save at startup (slow on large worlds)",
     )
     parser.add_argument(
         "--preload-limit",
         type=int,
-        default=int(os.environ.get("TOPOGRAPHY_PRELOAD_LIMIT", "0")),
+        default=int(os.environ.get("CARTOGRAPHY_PRELOAD_LIMIT", "0")),
         help="Max chunks to preload, 0 = unlimited",
     )
     return parser
@@ -151,7 +151,7 @@ def main(argv=None):
 
     if not args.token and not is_loopback(args.host):
         log.error(
-            "Refusing to start on non-loopback host %r without --token/TOPOGRAPHY_TOKEN",
+            "Refusing to start on non-loopback host %r without --token/CARTOGRAPHY_TOKEN",
             args.host,
         )
         return 2

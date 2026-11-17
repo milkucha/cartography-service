@@ -23,7 +23,7 @@ import logging
 import landforms
 import mc_blocks
 
-log = logging.getLogger("topography.perception")
+log = logging.getLogger("cartography.perception")
 
 MAX_PERCEPTION_CHUNKS = 1024
 DEFAULT_SIZE_CHUNKS = 16
@@ -139,7 +139,7 @@ def build_perception(store, x: int, z: int, size_chunks: int = DEFAULT_SIZE_CHUN
         updated_at = time.time()
 
     result = {
-        "service": "topography",
+        "service": "cartography",
         "center": {"x": x, "z": z},
         "size_chunks": size_chunks,
         "window": {"cx1": cx1, "cz1": cz1, "cx2": cx2, "cz2": cz2},

@@ -386,7 +386,7 @@ class ApiTrustTests(StoreCase):
         out = self.req("GET", "/perception?x=0&z=0&dimension=minecraft:the_nether")
         self.assertEqual(
             out,
-            {"service": "topography", "unavailable": "dimension", "dimension": "minecraft:the_nether"},
+            {"service": "cartography", "unavailable": "dimension", "dimension": "minecraft:the_nether"},
         )
         out = self.req("POST", "/position", {"x": 0, "z": 0, "dimension": "the_end"})
         self.assertEqual(out["unavailable"], "dimension")

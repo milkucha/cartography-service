@@ -67,7 +67,7 @@ import mc_blocks
 import overview
 import terrain_rules
 
-log = logging.getLogger("topography.store")
+log = logging.getLogger("cartography.store")
 
 MAX_PERCEPTION_CHUNKS = 1024
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 
-log = logging.getLogger("topography.prefetch")
+log = logging.getLogger("cartography.prefetch")
 
 
 class PrefetchWorker:

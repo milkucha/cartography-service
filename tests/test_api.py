@@ -180,7 +180,7 @@ class ApiTests(unittest.TestCase):
             "GET", "/perception", {"x": 8, "z": 8, "size_chunks": 4}
         )
         self.assertEqual(status, 200)
-        self.assertEqual(payload["service"], "topography")
+        self.assertEqual(payload["service"], "cartography")
         self.assertEqual(payload["resolution"], "lod")
         self.assertEqual(payload["center"], {"x": 8, "z": 8})
         self.assertEqual(payload["size_chunks"], 4)
