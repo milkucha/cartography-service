@@ -1,8 +1,8 @@
 # Cartography service: reference
 
-Python map service for Mindcraft (Cartography for Mindcraft-CE). Loads a Minecraft save, keeps a tiered world model
-(hot/warm in memory, cold in SQLite), applies live block-change diffs from the Fabric plugin **or
-chunk data forwarded by a Mindcraft bot**, and serves compact JSON queries to the agent.
+Python map service for Mindcraft (Cartography for Mindcraft-CE). Builds a tiered world model (hot/warm in
+memory, cold in SQLite) from **chunk data forwarded by a Mindcraft bot**, optionally also from a Minecraft save
+and live block-change diffs from the Fabric plugin, and serves compact JSON queries to the agent.
 
 Standard library only — Python 3.10+ is the only requirement.
 
@@ -185,9 +185,8 @@ The suite builds a synthetic coast world in a temp directory, so it needs no Min
 | `overview.py` | `/overview`: per-chunk summaries, sectors/rings, features, cache (limits at top of file) |
 | `settlements.py`, `survey.py`, `store_view.py` | Settlement detection, survey digest, per-agent gated store view |
 
-`mc_nbt.py`, `region.py`, `palette.py`, and `composition.py` are adapted from the local
-`Archeology/tools` scripts. `mc_blocks.py` provides the block classification tables used by the
-service.
+`mc_nbt.py`, `region.py`, `palette.py`, and `composition.py` are adapted from the author's earlier
+Archeology tools. `mc_blocks.py` provides the block classification tables used by the service.
 
 ## License
 

@@ -1,7 +1,8 @@
-# Topography Contract
+# Cartography for Mindcraft-CE: HTTP contract
 
-Shared interface between `topography-service`, `topography-plugin`, and the Mindcraft
-`topography.js` command handlers. Any change here must be reflected in all three repos.
+Shared interface between the service (`cartography-service`), the optional Fabric plugin, and the Mindcraft
+hooks (`topography.js` and friends). Any change here must be reflected in all three. The terrain layer keeps the
+name *topography* in settings, endpoints, environment variables and code.
 
 Base URL: `http://127.0.0.1:8090` (override with `TOPOGRAPHY_SERVICE_URL`).
 
@@ -227,7 +228,7 @@ Response:
   revalidates it with later overlays replayed. Without a save there is nothing to reconcile.
 - The service rebuilds `WORLD_SURFACE` from the decoded blocks. A save stores `MOTION_BLOCKING`, so
   on columns topped by non-solid blocks the lowest counted section can differ by one. Parity is
-  exact on the synthetic test world (`topography-service/tests/test_bot_chunk.py`).
+  exact on the synthetic test world (`tests/test_bot_chunk.py`).
 
 ### Start modes and authentication
 
@@ -495,7 +496,7 @@ defaults below.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `topography_service_url` | `http://127.0.0.1:8090` | Resolved from `TOPOGRAPHY_SERVICE_URL` env, then `settings.js`, then the default |
-| `topography_enabled` | `true` | Master switch; `false` disables the block, the topography commands, and prefetch |
+| `topography_enabled` | `false` | Master switch, off by default; `true` turns on the feed, the block, the topography commands, routing and prefetch |
 | `topography_perception` | `true` | Inject `$TOPOGRAPHY` into every prompt (when the master switch is on) |
 | `topography_debug` | `false` | Log perception fetch/cache timing, status, and failure reasons |
 | `topography_render_chunks` | `16` | Perception window side length in chunks |
@@ -526,7 +527,7 @@ Each stored chunk's `surface` has 256 entries per array (index `x%16 + (z%16)*16
 ores, snow, ...), scanning down past roofs, floors, decks, logs, leaves, plants and liquids; under
 water it is the bed, and `null` when nothing natural lies below. The whitelist is
 `terrain_rules.py` in the service and `ColumnSurface` in the plugin and must stay identical
-(`topography-service/tools/check_terrain_rules_sync.py`). Player-placed stone-family blocks still count.
+(`tools/check_terrain_rules_sync.py`). Player-placed stone-family blocks still count.
 
 `/perception` additionally returns `terrain.highest`, `terrain.lowest`, `terrain.highest_by_direction`
 and `terrain.relief`, computed from `terrain_y`.
@@ -589,7 +590,7 @@ the slope is clear), `prominence` (hill, mountain, ridge, plateau: rise over the
   of the known data is never a cliff or shoreline. A landform touching unknown ground has
   `"partial": true` (its size is a lower bound). `missing_chunks` / `unexplored_chunks` as elsewhere.
 - Non-overworld `dimension` -> `{"unavailable": "dimension"}`. Thresholds are constants at the top of
-  `topography-service/landforms.py`.
+  `landforms.py`.
 - Mindcraft: `landforms: cliff 40 W y70-110; hill 120 N y96; lake 30 E` (protected line after the
   settlement line; max 4; plains only when nothing else) and the `!landforms(x, z, radius)` command.
 
@@ -641,7 +642,7 @@ stopped at an unseen chunk, at water, or at terrain.
   (<= 6 wide, >= 5 long, deck at least 2 above `terrain_y`) with walkable natural ground within 2 blocks of
   deck height at **both** ends; a pier or roof does not count. Diagonal strips are not detected.
 - `detours`: `[{"around":"water|cliff","cells":n}]` when the straight line would have crossed it.
-- Costs (constants at the top of `topography-service/route.py`): water x5, buildings x2.5, steep ground
+- Costs (constants at the top of `route.py`): water x5, buildings x2.5, steep ground
   `+0.25` per block of in-cell relief above 2 and `+1.5` per block of height step above 1; every block of
   height gained (uphill only) adds `+2`, so a long even climb over a peak costs more than a valley round
   it; bridge x0.6, path
@@ -702,7 +703,7 @@ stopped at an unseen chunk, at water, or at terrain.
 
 ## Storage
 
-The service keeps one SQLite database per world (`topography-service/maps/<level>-<worldid>.db`);
+The service keeps one SQLite database per world (`maps/<level>-<worldid>.db`);
 `--db` / `TOPOGRAPHY_DB` override it, and `--name` / `TOPOGRAPHY_NAME` names a save-less database
 (`maps/<name>.db`). Each bot keeps `bots/<name>/memory.db` (and its other files) per
 world under `bots/<name>/worlds/<world_name>/` when `world_name` / `MINDCRAFT_WORLD` is set.
