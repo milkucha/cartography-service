@@ -58,34 +58,40 @@ given one instruction: go to these coordinates.
 
 | Route | Length | Topo | Vanilla |
 |---|---|---|---|
-| LC: dry ground | 1000 | **100%** (10/10) | 60% (6/10) |
-| LW1: lake on the line | 1000 | **100%** (10/10) | 0% (0/10) |
-| LW2: 332-block bay | 1000 | **100%** (10/10) | 80% (8/10) |
-| MT: mountain massif, unseen | 1000 | **100%** (10/10) | 0% (0/10) |
-| MT-seen: same, area seen first | 1000 | **100%** (10/10) | 0% (0/10) |
-| RV: ravine on the line | 200 | **100%** (10/10) | 70% (7/10) |
+| Dry ground (LC: long, control) | 1000 | **100%** (10/10) | 60% (6/10) |
+| Lake on the line (LW1: long, water 1) | 1000 | **100%** (10/10) | 0% (0/10) |
+| 332-block bay (LW2: long, water 2) | 1000 | **100%** (10/10) | 80% (8/10) |
+| Mountain massif, unseen (MT: mountain) | 1000 | **100%** (10/10) | 0% (0/10) |
+| Mountain massif, area seen first (MT-seen) | 1000 | **100%** (10/10) | 0% (0/10) |
+| Ravine on the line (RV: ravine) | 200 | **100%** (10/10) | 70% (7/10) |
 | **All** | | **100%** (60/60) | **35%** (21/60) |
 
 - **Return legs:** Topo 50/50, Vanilla 10/14.
 - **Deaths:** Topo 0, Vanilla 2.
-- **Tokens per arrival:** where both mostly arrived (LC, LW2, RV), Topo used 6–10k and Vanilla 43–61k.
+- **Tokens per arrival:** where both mostly arrived (dry ground, bay, ravine), Topo used 6–10k and Vanilla 43–61k.
 - **Ravine:** Topo stayed away from the edge in 10/10 runs; Vanilla walked to it in 9/10 (neither fell).
 
 > [!Important]
 > **Limits**
 > - In unseen mountains, Topo goes over the top; it only routes round terrain it has seen.
-> - Topo allows short swims (up to 2 water cells; 4–14 s in water on LW1 and LW2).
+> - Topo allows short swims (up to 2 water cells; 4–14 s in water on the lake and the bay).
 > - On half the mountain legs, the model had to re-issue the command near the target.
-> - The LW2 and RV differences are not significant at 10 runs.
+> - The bay and ravine differences are not significant at 10 runs.
 
 Each chart shows all 20 journeys on one route (Topo purple, Vanilla orange) over the terrain, with a
 height profile below.
 
-| | |
-|---|---|
-| <a href="docs/results/LC-cold.svg"><img src="docs/results/LC-cold.svg" width="380" alt="LC tracks"></a> | <a href="docs/results/LW1-cold.svg"><img src="docs/results/LW1-cold.svg" width="380" alt="LW1 tracks"></a> |
-| <a href="docs/results/LW2-cold.svg"><img src="docs/results/LW2-cold.svg" width="380" alt="LW2 tracks"></a> | <a href="docs/results/MT-cold.svg"><img src="docs/results/MT-cold.svg" width="380" alt="MT tracks"></a> |
-| <a href="docs/results/MT-seen.svg"><img src="docs/results/MT-seen.svg" width="380" alt="MT-seen tracks"></a> | <a href="docs/results/RV-cold.svg"><img src="docs/results/RV-cold.svg" width="380" alt="RV tracks"></a> |
+<p align="center"><a href="docs/results/LC-cold.svg"><img src="docs/results/LC-cold.svg" width="720" alt="Dry ground: tracks of all 20 journeys"></a></p>
+
+<p align="center"><a href="docs/results/LW1-cold.svg"><img src="docs/results/LW1-cold.svg" width="720" alt="Lake on the line: tracks of all 20 journeys"></a></p>
+
+<p align="center"><a href="docs/results/LW2-cold.svg"><img src="docs/results/LW2-cold.svg" width="720" alt="332-block bay: tracks of all 20 journeys"></a></p>
+
+<p align="center"><a href="docs/results/MT-cold.svg"><img src="docs/results/MT-cold.svg" width="720" alt="Mountain massif, unseen: tracks of all 20 journeys"></a></p>
+
+<p align="center"><a href="docs/results/MT-seen.svg"><img src="docs/results/MT-seen.svg" width="720" alt="Mountain massif, seen first: tracks of all 20 journeys"></a></p>
+
+<p align="center"><a href="docs/results/RV-cold.svg"><img src="docs/results/RV-cold.svg" width="720" alt="Ravine on the line: tracks of all 20 journeys"></a></p>
 
 # How it works
 
