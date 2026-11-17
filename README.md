@@ -71,19 +71,7 @@ average for the legs (outbound or return) that arrived.
 <tr><td>Mountain (MT): Massif, Unseen</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">145k</td><td align="center">21k</td><td align="center">–</td><td align="center">10k</td></tr>
 <tr><td>Mountain, Seen (MT-seen): Massif, Seen First</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">153k</td><td align="center">24k</td><td align="center">–</td><td align="center">12k</td></tr>
 <tr><td>Ravine (RV): Ravine on the Line</td><td align="center">200</td><td align="center">70%</td><td align="center">100%</td><td align="center">39k</td><td align="center">6k</td><td align="center">26k</td><td align="center">6k</td></tr>
-<tr><td><b>All</b></td><td align="center"></td><td align="center"><b>35%</b></td><td align="center">
-
-$\color{Purple}\textbf{100\%}$
-
-</td><td align="center"><b>106k</b></td><td align="center">
-
-$\color{Purple}\textbf{16k}$
-
-</td><td align="center"><b>32k</b></td><td align="center">
-
-$\color{Purple}\textbf{9k}$
-
-</td></tr>
+<tr><td><b>All</b></td><td align="center"></td><td align="center"><b>35%</b></td><td align="center"><b>100%</b></td><td align="center"><b>106k</b></td><td align="center"><b>16k</b></td><td align="center"><b>32k</b></td><td align="center"><b>9k</b></td></tr>
 </table>
 
 Topo also walked the return leg on every run, so its per-run figures cover more walking. Vanilla's failed runs kept
