@@ -52,10 +52,11 @@ Routing is on by default (`topography_routing: false` turns it off). The terrain
 
 Two bots, **Topo** (Mindcraft with the cartography service) and **Vanilla** (plain Mindcraft CE), were asked to complete six challenging routes in one natural world. 
 
-> Seed: 6542604540806855638
-> Version: 1.20.1
-> Model: DeepSeek Flash v.4.1
-> Prompt: "go to these coordinates"
+> **Seed:** 6542604540806855638\
+> **Version:** Minecraft Java 1.20.1\
+> **Model:** DeepSeek Flash v.4.1 (same for both bots)\
+> **Runs:** 10 per route per bot\
+> **Prompt:** "Go to x=…, y=…, z=…. Keep going until you are there; if the way is blocked, find another way. Say 'arrived' when you are standing there."
 
 **Arrival rate** is the share of runs in which the bot reached the target (within 5 blocks). **Tokens per run**
 is the average model usage per run, outbound and return legs together. **Tokens per successful trip** is the
@@ -70,7 +71,19 @@ average for the legs (outbound or return) that arrived.
 <tr><td>Mountain (MT): Massif, Unseen</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">145k</td><td align="center">21k</td><td align="center">–</td><td align="center">10k</td></tr>
 <tr><td>Mountain, Seen (MT-seen): Massif, Seen First</td><td align="center">1000</td><td align="center">0%</td><td align="center">100%</td><td align="center">153k</td><td align="center">24k</td><td align="center">–</td><td align="center">12k</td></tr>
 <tr><td>Ravine (RV): Ravine on the Line</td><td align="center">200</td><td align="center">70%</td><td align="center">100%</td><td align="center">39k</td><td align="center">6k</td><td align="center">26k</td><td align="center">6k</td></tr>
-<tr><td><b>All</b></td><td align="center"></td><td align="center"><b>35%</b></td><td align="center"><b>100%</b></td><td align="center"><b>106k</b></td><td align="center"><b>16k</b></td><td align="center"><b>32k</b></td><td align="center"><b>9k</b></td></tr>
+<tr><td><b>All</b></td><td align="center"></td><td align="center"><b>35%</b></td><td align="center">
+
+$\color{Purple}\textbf{100\%}$
+
+</td><td align="center"><b>106k</b></td><td align="center">
+
+$\color{Purple}\textbf{16k}$
+
+</td><td align="center"><b>32k</b></td><td align="center">
+
+$\color{Purple}\textbf{9k}$
+
+</td></tr>
 </table>
 
 Topo also walked the return leg on every run, so its per-run figures cover more walking. Vanilla's failed runs kept
