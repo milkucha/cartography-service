@@ -59,12 +59,12 @@ given one instruction: go to these coordinates.
 
 | Route | Length | Topo | Vanilla |
 |---|---|---|---|
-| Dry ground (LC: long, control) | 1000 | **100%** (10/10) | 60% (6/10) |
-| Lake on the line (LW1: long, water 1) | 1000 | **100%** (10/10) | 0% (0/10) |
-| 332-block bay (LW2: long, water 2) | 1000 | **100%** (10/10) | 80% (8/10) |
-| Mountain massif, unseen (MT: mountain) | 1000 | **100%** (10/10) | 0% (0/10) |
-| Mountain massif, area seen first (MT-seen) | 1000 | **100%** (10/10) | 0% (0/10) |
-| Ravine on the line (RV: ravine) | 200 | **100%** (10/10) | 70% (7/10) |
+| Long, Control (LC): Dry Ground | 1000 | **100%** (10/10) | 60% (6/10) |
+| Long, Water 1 (LW1): Lake on the Line | 1000 | **100%** (10/10) | 0% (0/10) |
+| Long, Water 2 (LW2): 332-Block Bay | 1000 | **100%** (10/10) | 80% (8/10) |
+| Mountain (MT): Massif, Unseen | 1000 | **100%** (10/10) | 0% (0/10) |
+| Mountain, Seen (MT-seen): Massif, Seen First | 1000 | **100%** (10/10) | 0% (0/10) |
+| Ravine (RV): Ravine on the Line | 200 | **100%** (10/10) | 70% (7/10) |
 | **All** | | **100%** (60/60) | **35%** (21/60) |
 
 - **Return legs:** Topo 50/50, Vanilla 10/14.
@@ -82,17 +82,17 @@ given one instruction: go to these coordinates.
 Each chart shows all 20 journeys on one route (Topo purple, Vanilla orange) over the terrain, with a
 height profile below.
 
-<p align="center"><a href="docs/results/LC-cold.svg"><img src="docs/results/LC-cold.svg" width="720" alt="Dry ground: tracks of all 20 journeys"></a></p>
+<p align="center"><a href="docs/results/LC-cold.svg"><img src="docs/results/LC-cold.svg" width="720" alt="Long, Control (LC): Dry Ground: tracks of all 20 journeys"></a></p>
 
-<p align="center"><a href="docs/results/LW1-cold.svg"><img src="docs/results/LW1-cold.svg" width="720" alt="Lake on the line: tracks of all 20 journeys"></a></p>
+<p align="center"><a href="docs/results/LW1-cold.svg"><img src="docs/results/LW1-cold.svg" width="720" alt="Long, Water 1 (LW1): Lake on the Line: tracks of all 20 journeys"></a></p>
 
-<p align="center"><a href="docs/results/LW2-cold.svg"><img src="docs/results/LW2-cold.svg" width="720" alt="332-block bay: tracks of all 20 journeys"></a></p>
+<p align="center"><a href="docs/results/LW2-cold.svg"><img src="docs/results/LW2-cold.svg" width="720" alt="Long, Water 2 (LW2): 332-Block Bay: tracks of all 20 journeys"></a></p>
 
-<p align="center"><a href="docs/results/MT-cold.svg"><img src="docs/results/MT-cold.svg" width="720" alt="Mountain massif, unseen: tracks of all 20 journeys"></a></p>
+<p align="center"><a href="docs/results/MT-cold.svg"><img src="docs/results/MT-cold.svg" width="720" alt="Mountain (MT): Massif, Unseen: tracks of all 20 journeys"></a></p>
 
-<p align="center"><a href="docs/results/MT-seen.svg"><img src="docs/results/MT-seen.svg" width="720" alt="Mountain massif, seen first: tracks of all 20 journeys"></a></p>
+<p align="center"><a href="docs/results/MT-seen.svg"><img src="docs/results/MT-seen.svg" width="720" alt="Mountain, Seen (MT-seen): Massif, Seen First: tracks of all 20 journeys"></a></p>
 
-<p align="center"><a href="docs/results/RV-cold.svg"><img src="docs/results/RV-cold.svg" width="720" alt="Ravine on the line: tracks of all 20 journeys"></a></p>
+<p align="center"><a href="docs/results/RV-cold.svg"><img src="docs/results/RV-cold.svg" width="720" alt="Ravine (RV): Ravine on the Line: tracks of all 20 journeys"></a></p>
 
 # How it works
 
