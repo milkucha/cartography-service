@@ -1,6 +1,6 @@
 """Generate a tiny synthetic Minecraft save for Phase 4 manual scenarios.
 
-Usage (from topography-service/):
+Usage (from the repository root):
     python tests/make_test_world.py --out ./test-world
     python main.py --world ./test-world --preload
 
