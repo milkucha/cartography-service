@@ -29,7 +29,7 @@ world save and no vision.
 - The Mindcraft fork with the map hooks: [mindcraft-ce-topography, branch `topography`](https://github.com/milkucha/mindcraft-ce-topography/tree/topography)
 - Minecraft Java Edition.
 
-> [!Warning]
+> [!Note]
 > Tested on **1.20.1**; should work on 1.18 and later. However, blocks added after 1.20.1 may be misread as non-natural ground.
 
 ## Install and Run
@@ -76,20 +76,10 @@ average for the legs (outbound or return) that arrived.
 <tr><td><b>All</b></td><td align="center"></td><td align="center"><b>35%</b></td><td align="center"><b>100%</b></td><td align="center"><b>106k</b></td><td align="center"><b>16k</b></td><td align="center"><b>32k</b></td><td align="center"><b>9k</b></td></tr>
 </table>
 
-Topo also walked the return leg on every run, so its per-run figures cover more walking. Vanilla's failed runs kept
+> [!Note]
+> Topo also walked the return leg on every run, so its per-run figures cover more walking. Vanilla's failed runs kept
 the model busy (digging, crafting, retrying) until it gave up or timed out, which is why its token use is highest
 where it never arrived. A dash means Vanilla never arrived on that route.
-
-- **Return legs:** Vanilla 10/14, Topo 50/50.
-- **Deaths:** Vanilla 2, Topo 0.
-- **Ravine:** Vanilla walked to the edge in 9/10 runs; Topo stayed away from it in 10/10 (neither fell).
-
-> [!Important]
-> **Limits**
-> - In unseen mountains, Topo goes over the top; it only routes round terrain it has seen.
-> - Topo allows short swims (up to 2 water cells; 4–14 s in water on the lake and the bay).
-> - On half the mountain legs, the model had to re-issue the command near the target.
-> - The bay and ravine differences are not significant at 10 runs.
 
 Each chart shows all 20 journeys on one route (Vanilla orange, Topo purple) over the terrain, with a
 height profile below.
