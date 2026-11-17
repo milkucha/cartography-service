@@ -1,5 +1,5 @@
 <div>
-<h1 align="center">🗺️ Topography for Mindcraft-CE</h1>
+<h1 align="center">🗺️ Cartography for Mindcraft-CE</h1>
 
 <p align="center">A terrain map for <a href="https://github.com/mindcraft-ce/mindcraft-ce">Mindcraft CE</a> bots, built from the chunks they load.</p>
 <p align="center">Spatial awareness and long-range routing from what the bot has actually seen.</p>
@@ -47,7 +47,8 @@ world save and no vision.
    ```
 3. Join the server and play. The map fills in as the bot loads chunks.
 
-Routing is on by default (`topography_routing: false` turns it off).
+Routing is on by default (`topography_routing: false` turns it off). The terrain layer is called
+*topography* in settings and commands.
 
 <a id="results"></a>
 # Results
@@ -108,7 +109,7 @@ height profile below.
 # Architecture
 
 ```
-Mindcraft bot ── POST /chunk_raw, /seen, /position ──▶ topography service ──▶ SQLite (one DB per world)
+Mindcraft bot ── POST /chunk_raw, /seen, /position ──▶ cartography service ──▶ SQLite (one DB per world)
       ▲                                                  │
       └──── GET /perception, queries, /route ◀───────────┘
    (optional) world save / Fabric plugin ──▶ same ingest path

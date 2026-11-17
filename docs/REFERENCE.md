@@ -1,6 +1,6 @@
-# Topography service: reference
+# Cartography service: reference
 
-Python map service for Mindcraft topography. Loads a Minecraft save, keeps a tiered world model
+Python map service for Mindcraft (Cartography for Mindcraft-CE). Loads a Minecraft save, keeps a tiered world model
 (hot/warm in memory, cold in SQLite), applies live block-change diffs from the Fabric plugin **or
 chunk data forwarded by a Mindcraft bot**, and serves compact JSON queries to the agent.
 
