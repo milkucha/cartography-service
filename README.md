@@ -52,11 +52,13 @@ service as a whole start with `cartography_`; the terrain layer's start with `to
 
 Two bots, **Topo** (Mindcraft with the cartography service) and **Vanilla** (plain Mindcraft CE), were asked to complete six challenging routes in one natural world. 
 
-> **Seed:** 6542604540806855638\
-> **Version:** Minecraft Java 1.20.1\
-> **Model:** DeepSeek Flash v.4.1 (same for both bots)\
-> **Runs:** 10 per route per bot\
-> **Prompt:** "Go to x=…, y=…, z=…. Keep going until you are there; if the way is blocked, find another way. Say 'arrived' when you are standing there."
+| Test setup | |
+|---|---|
+| Seed | 6542604540806855638 |
+| Version | Minecraft Java 1.20.1 |
+| Model | DeepSeek Flash v.4.1 (same for both bots) |
+| Runs | 10 per route per bot |
+| Prompt | "Go to x=…, y=…, z=…. Keep going until you are there; if the way is blocked, find another way. Say 'arrived' when you are standing there." |
 
 **Arrival rate** is the share of runs in which the bot reached the target (within 5 blocks). **Tokens per run**
 is the average model usage per run, outbound and return legs together. **Tokens per successful trip** is the
