@@ -57,19 +57,19 @@ Six routes in one natural world (seed 6542604540806855638), 10 runs per route pe
 Mindcraft with this service; **Vanilla** is plain Mindcraft CE. Both use the same model (DeepSeek flash),
 given one instruction: go to these coordinates.
 
-**Arrival rate** is the share of runs in which the bot reached the target (within 5 blocks). **Tokens per run**
+Topo in purple, Vanilla in orange (as in the charts). **Arrival rate** is the share of runs in which the bot reached the target (within 5 blocks). **Tokens per run**
 is the average model usage per run, outbound and return legs together. **Tokens per successful trip** is the
 average for the legs (outbound or return) that arrived.
 
-| Route | Length (blocks) | Arrival rate: Topo | Arrival rate: Vanilla | Tokens per run: Topo | Tokens per run: Vanilla | Tokens per successful trip: Topo | Tokens per successful trip: Vanilla |
+| Route | Length (blocks) | Arrival rate (%): Topo | Arrival rate (%): Vanilla | Tokens per run: Topo | Tokens per run: Vanilla | Tokens per successful trip: Topo | Tokens per successful trip: Vanilla |
 |---|---|---|---|---|---|---|---|
-| Long, Control (LC): Dry Ground | 1000 | **100%** | 60% | **12k** | 43k | **6k** | 18k |
-| Long, Water 1 (LW1): Lake on the Line | 1000 | **100%** | 0% | **13k** | 169k | **7k** | – |
-| Long, Water 2 (LW2): 332-Block Bay | 1000 | **100%** | 80% | **20k** | 85k | **10k** | 45k |
-| Mountain (MT): Massif, Unseen | 1000 | **100%** | 0% | **21k** | 145k | **10k** | – |
-| Mountain, Seen (MT-seen): Massif, Seen First | 1000 | **100%** | 0% | **24k** | 153k | **12k** | – |
-| Ravine (RV): Ravine on the Line | 200 | **100%** | 70% | **6k** | 39k | **6k** | 26k |
-| **All** | | **100%** | **35%** | **16k** | **106k** | **9k** | **32k** |
+| Long, Control (LC): Dry Ground | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{60}$ | $\color{Purple}\textbf{12k}$ | $\color{BurntOrange}\textsf{43k}$ | $\color{Purple}\textbf{6k}$ | $\color{BurntOrange}\textsf{18k}$ |
+| Long, Water 1 (LW1): Lake on the Line | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{0}$ | $\color{Purple}\textbf{13k}$ | $\color{BurntOrange}\textsf{169k}$ | $\color{Purple}\textbf{7k}$ | – |
+| Long, Water 2 (LW2): 332-Block Bay | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{80}$ | $\color{Purple}\textbf{20k}$ | $\color{BurntOrange}\textsf{85k}$ | $\color{Purple}\textbf{10k}$ | $\color{BurntOrange}\textsf{45k}$ |
+| Mountain (MT): Massif, Unseen | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{0}$ | $\color{Purple}\textbf{21k}$ | $\color{BurntOrange}\textsf{145k}$ | $\color{Purple}\textbf{10k}$ | – |
+| Mountain, Seen (MT-seen): Massif, Seen First | 1000 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{0}$ | $\color{Purple}\textbf{24k}$ | $\color{BurntOrange}\textsf{153k}$ | $\color{Purple}\textbf{12k}$ | – |
+| Ravine (RV): Ravine on the Line | 200 | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{70}$ | $\color{Purple}\textbf{6k}$ | $\color{BurntOrange}\textsf{39k}$ | $\color{Purple}\textbf{6k}$ | $\color{BurntOrange}\textsf{26k}$ |
+| **All** |  | $\color{Purple}\textbf{100}$ | $\color{BurntOrange}\textsf{35}$ | $\color{Purple}\textbf{16k}$ | $\color{BurntOrange}\textsf{106k}$ | $\color{Purple}\textbf{9k}$ | $\color{BurntOrange}\textsf{32k}$ |
 
 Topo also walked the return leg on every run, so its per-run figures cover more walking. Vanilla's failed runs kept
 the model busy (digging, crafting, retrying) until it gave up or timed out, which is why its token use is highest
@@ -91,31 +91,43 @@ height profile below.
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/LC-cold.svg"><img src="docs/results/LC-cold.svg" width="720" alt="Long, Control (LC): Dry Ground: tracks of all 20 journeys"></a>
+<hr>
+<p><strong>Summary</strong></p>
 <p>Both bots set off along the straight line, and on open ground they look much alike. Topo arrived every time, in about five minutes. Vanilla made it six times; in the other four, its pathfinder got stuck hopping in place about 30 blocks from the target, and it never got going again.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/LW1-cold.svg"><img src="docs/results/LW1-cold.svg" width="720" alt="Long, Water 1 (LW1): Lake on the Line: tracks of all 20 journeys"></a>
+<hr>
+<p><strong>Summary</strong></p>
 <p>A lake lies across the straight line. Topo went round it every time, crossing only one short channel (8 to 14 seconds in water). Vanilla headed straight for the water, then dug, crafted and wandered, mostly on the near side; it gave up or ran out of time on all ten runs, once just 24 blocks short.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/LW2-cold.svg"><img src="docs/results/LW2-cold.svg" width="720" alt="Long, Water 2 (LW2): 332-Block Bay: tracks of all 20 journeys"></a>
+<hr>
+<p><strong>Summary</strong></p>
 <p>A 332-block bay sits on the line. Topo took the long way round the west shore, with only a few seconds in water. Vanilla swam straight across, spending up to four and a half minutes in the water; it arrived eight times and gave up twice.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/MT-cold.svg"><img src="docs/results/MT-cold.svg" width="720" alt="Mountain (MT): Massif, Unseen: tracks of all 20 journeys"></a>
+<hr>
+<p><strong>Summary</strong></p>
 <p>A mountain massif blocks the line, and Topo had never seen the area, so it had no valley to plan through and went up and over the top (climbing about 155 blocks). It still arrived every time, and on the way back, with the area now seen, it took the lower road to the east. Vanilla walked into the massif, got stuck in its slopes and caves, and never arrived; it died once.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/MT-seen.svg"><img src="docs/results/MT-seen.svg" width="720" alt="Mountain, Seen (MT-seen): Massif, Seen First: tracks of all 20 journeys"></a>
+<hr>
+<p><strong>Summary</strong></p>
 <p>The same massif, but Topo had walked the area before. This time it planned the low road round the east side from the start, climbing only 73 to 80 blocks. Vanilla, with no map, went straight into the mountain again and gave up or timed out on all ten runs.</p>
 </td></tr></table>
 
 <table align="center"><tr><td width="720">
 <a href="docs/results/RV-cold.svg"><img src="docs/results/RV-cold.svg" width="720" alt="Ravine (RV): Ravine on the Line: tracks of all 20 journeys"></a>
+<hr>
+<p><strong>Summary</strong></p>
 <p>A deep ravine cuts across a 200-block trip. Topo routed round it without ever going near the edge. Vanilla walked straight to the edge nine times out of ten; it never fell, but it arrived only seven times.</p>
 </td></tr></table>
 
